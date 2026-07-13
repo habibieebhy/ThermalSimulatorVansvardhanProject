@@ -1,0 +1,79 @@
+# Mattress Thermal Prototype Simulator
+
+A clean, object-oriented NumPy/Matplotlib model for comparing five mattress
+thermal architectures over a six-hour sleep cycle. It produces a two-panel,
+investor-ready dashboard, a console summary table, and an optional CSV export.
+
+## Quick start
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+python -m mattress_thermal --csv outputs/mattress_simulation.csv
+```
+
+For the shortest route after installing only `requirements.txt`, run:
+
+```bash
+python run_simulation.py
+```
+
+The dashboard is saved to `outputs/mattress_investor_dashboard.png`. Add
+`--show` to open it interactively. Use `--output PATH` to change the image
+destination.
+
+## Physics model
+
+The occupied mattress zone is represented as a lumped thermal mass:
+
+```text
+C = mass × specific heat = 0.6 kg × 1600 J/(kg·K) = 960 J/K
+q = conductivity × area × temperature difference / path length
+ΔT = net heat flow × Δt / C
+```
+
+At each one-second time step, the model independently calculates heat entering
+from 37°C skin, heat rejected toward the 25°C room, architecture-specific heat
+removal, electrical power, and accumulated watt-hours. Active thermal paths are
+limited by both conductive capacity and device capacity.
+
+| Prototype | Modelled mechanism | Electrical profile |
+| --- | --- | ---: |
+| P1 Aero-Natural | Open-cell latex plus a finite 73.5 kJ PCM reservoir that saturates around 90 minutes | 0 W |
+| P2 Eco-Battery | Ambient-water microtubes and passive aluminum radiator | Constant 5 W |
+| P3 Core-Chiller | Peltier/water-block proportional controller targeting 29.5°C | 0–60 W controlled |
+| P4 Hyper-Conductive | Flexible graphite spreading heat to exposed edges | 0 W |
+| P5 Dual-Zone | One-hour turbo followed by 30 s on / 30 s off eco pulses | 40 W, then pulsed 10 W |
+
+“Final stabilised temperature” is the mean interface temperature during the
+last 15 minutes, not a potentially misleading single sample.
+
+## Programmatic use
+
+```python
+from mattress_thermal import run_mattress_simulation
+
+results = run_mattress_simulation(
+    output_path="outputs/pitch_dashboard.png",
+    csv_path="outputs/pitch_data.csv",
+    show=False,
+)
+```
+
+The returned tuple contains the temperature, instantaneous power, and
+cumulative energy arrays for all five prototypes.
+
+## Tests
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+## Engineering scope
+
+This is a transparent comparative prototype model, not a certification-grade
+finite-element or CFD model. The effective path dimensions, PCM capacity,
+Peltier COP, controller gain, and cooling coupling are explicit calibration
+parameters in `src/mattress_thermal/simulation.py`. Replace them with measured
+coupon, thermal-manikin, or guarded-hot-plate data before making product claims.

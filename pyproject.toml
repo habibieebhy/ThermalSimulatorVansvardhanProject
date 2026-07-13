@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mattress-thermal-prototype"
+version = "0.2.0"
+description = "Six-hour thermal and energy simulation for five mattress prototypes"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "matplotlib>=3.7",
+    "numpy>=1.24",
+    "streamlit>=1.35",
+]
+
+[project.scripts]
+mattress-sim = "mattress_thermal.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
