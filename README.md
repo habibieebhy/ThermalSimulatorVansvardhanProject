@@ -1,8 +1,8 @@
 # Mattress Thermal Prototype Simulator
 
-A clean, object-oriented NumPy/Matplotlib model for comparing five mattress
-thermal architectures over a six-hour sleep cycle. It produces a two-panel,
-investor-ready dashboard, a console summary table, and an optional CSV export.
+A clean, object-oriented NumPy/Matplotlib model with a Streamlit graphical
+control panel for comparing five mattress thermal architectures. It produces a
+two-panel investor dashboard, decision table, console report, and CSV export.
 
 ## Quick start
 
@@ -12,6 +12,22 @@ source .venv/bin/activate
 python -m pip install -e .
 python -m mattress_thermal --csv outputs/mattress_simulation.csv
 ```
+
+## Graphical interface
+
+Launch the browser-based thermal lab with:
+
+```bash
+streamlit run app.py
+```
+
+Use the left control panel to change room/body conditions and architecture
+parameters, press **Run simulation**, then download the regenerated dashboard or
+full time-series CSV. The defaults reproduce the validated six-hour baseline.
+With **Animate graph formation** enabled, Run simulation progressively reveals
+the real calculated curves and displays a simulation clock. This is playback of
+the completed one-second numerical solution; disable it for faster parameter
+sweeps.
 
 For the shortest route after installing only `requirements.txt`, run:
 
@@ -48,6 +64,27 @@ limited by both conductive capacity and device capacity.
 
 “Final stabilised temperature” is the mean interface temperature during the
 last 15 minutes, not a potentially misleading single sample.
+
+## What to tune—and what it changes
+
+| Control | Primary effect | Important distinction |
+| --- | --- | --- |
+| Room/skin temperature | Changes the driving temperature difference | A hotter room makes every room-coupled passive system weaker |
+| Foam mass or specific heat | Changes warm-up speed | Does not materially change true steady-state temperature |
+| PCM capacity | Extends P1 cooling duration | Does not improve P1 after saturation |
+| PCM absorption power | Limits how fast PCM can accept body heat | Capacity is “how long”; absorption power is “how hard” |
+| Conductivity or area | Increases conductive heat rejection | Test assembled-system effective values, not ideal material datasheets |
+| Heat-flow distance | Reduces rejection when increased | It appears in the denominator of `q = kAΔT/L` |
+| Peltier COP | Changes cooling obtained per electrical watt | Poor heat-sink performance lowers real COP sharply |
+| Controller target/gain | Sets P3 operating point and response strength | Extreme gain can imply control behaviour the hardware cannot deliver |
+| Turbo power/duration | Controls P5 first-hour pull-down and energy | Longer turbo directly increases Wh |
+| Pulse duty cycle | Controls average eco power | Average eco demand is pulse power × duty cycle |
+| Cooling coupling | Represents system-level delivery losses | This must be calibrated from a physical prototype |
+
+Change one family of parameters at a time, keep a named baseline, and compare
+temperature **and** Wh together. A curve inside 28–32°C is not automatically a
+winning design if the assumed material path, COP, or radiator area cannot be
+manufactured.
 
 ## Programmatic use
 
