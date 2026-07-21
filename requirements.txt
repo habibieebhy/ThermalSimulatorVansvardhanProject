@@ -1,3 +1,19 @@
-numpy>=1.24
-matplotlib>=3.7
-streamlit>=1.35
+# Install with: python -m pip install -r requirements.txt
+
+# Core research, deterministic extraction, algorithms, Excel, and UI
+lxml>=5.0
+numpy>=1.26
+pandas>=2.1
+pydantic>=2.6
+pypdf>=5.0
+python-dotenv>=1.0
+PyYAML>=6.0
+scikit-learn>=1.4
+streamlit>=1.40
+XlsxWriter>=3.2
+
+# Full local capabilities
+playwright>=1.50
+ortools>=9.12
+fastapi>=0.115
+uvicorn[standard]>=0.34

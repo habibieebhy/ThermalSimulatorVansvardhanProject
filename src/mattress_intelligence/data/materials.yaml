@@ -1,0 +1,330 @@
+schema_version: 1
+notice: Engineering priors for screening and hypothesis generation only. Do not present these values as
+  manufacturer-disclosed specifications. Replace with supplier certificates, teardown measurements, and
+  laboratory data.
+fallback_material: conventional_pu_foam
+thickness_grid_mm:
+- 5
+- 10
+- 15
+- 20
+- 25
+- 30
+- 35
+- 40
+- 45
+- 50
+- 55
+- 60
+- 65
+- 70
+- 75
+- 80
+- 85
+- 90
+- 95
+- 100
+- 105
+- 110
+- 115
+- 120
+- 125
+- 130
+- 135
+- 140
+- 145
+- 150
+- 155
+- 160
+- 165
+- 170
+- 175
+- 180
+- 185
+- 190
+- 195
+- 200
+- 205
+- 210
+- 215
+- 220
+- 225
+- 230
+- 235
+- 240
+- 245
+- 250
+- 255
+- 260
+- 265
+- 270
+- 275
+- 280
+- 285
+- 290
+- 295
+- 300
+materials:
+  quilt_foam:
+    aliases:
+    - quilt foam
+    - quiltec foam
+    - comfort foam
+    - soft pu foam
+    - plush foam
+    - euro top foam
+    - quilting
+    densities_kg_m3:
+    - 16
+    - 22
+    - 30
+    density_prior:
+    - 0.2
+    - 0.6
+    - 0.2
+    conductivity_w_mk: 0.038
+    specific_heat_j_kgk: 1400.0
+    firmness_index: 0.2
+  conventional_pu_foam:
+    aliases:
+    - pu foam
+    - polyurethane foam
+    - support foam
+    - comfort foam
+    - flexible foam
+    densities_kg_m3:
+    - 20
+    - 28
+    - 40
+    density_prior:
+    - 0.2
+    - 0.6
+    - 0.2
+    conductivity_w_mk: 0.04
+    specific_heat_j_kgk: 1400.0
+    firmness_index: 0.5
+  hr_foam:
+    aliases:
+    - hr foam
+    - high resilience foam
+    - resitec foam
+    - responsive foam
+    - reactive foam
+    - support pu foam
+    densities_kg_m3:
+    - 28
+    - 40
+    - 60
+    density_prior:
+    - 0.2
+    - 0.6
+    - 0.2
+    conductivity_w_mk: 0.041
+    specific_heat_j_kgk: 1400.0
+    firmness_index: 0.72
+  memory_foam:
+    aliases:
+    - memory foam
+    - visco foam
+    - viscoelastic foam
+    - impression foam
+    - slow recovery foam
+    densities_kg_m3:
+    - 35
+    - 55
+    - 85
+    density_prior:
+    - 0.2
+    - 0.6
+    - 0.2
+    conductivity_w_mk: 0.04
+    specific_heat_j_kgk: 1450.0
+    firmness_index: 0.32
+  gel_memory_foam:
+    aliases:
+    - gel memory foam
+    - cool gel foam
+    - gel infused foam
+    - thermo gel memory foam
+    - cooling memory foam
+    densities_kg_m3:
+    - 38
+    - 58
+    - 90
+    density_prior:
+    - 0.2
+    - 0.6
+    - 0.2
+    conductivity_w_mk: 0.045
+    specific_heat_j_kgk: 1450.0
+    firmness_index: 0.34
+  natural_latex:
+    aliases:
+    - latex
+    - natural latex
+    - dunlop latex
+    - talalay latex
+    - latex foam
+    - rubber foam
+    densities_kg_m3:
+    - 55
+    - 75
+    - 100
+    density_prior:
+    - 0.2
+    - 0.6
+    - 0.2
+    conductivity_w_mk: 0.12
+    specific_heat_j_kgk: 1800.0
+    firmness_index: 0.6
+  rebonded_foam:
+    aliases:
+    - rebonded foam
+    - bonded foam
+    - rebound foam
+    - recycled foam
+    - hard foam core
+    densities_kg_m3:
+    - 65
+    - 90
+    - 130
+    density_prior:
+    - 0.2
+    - 0.6
+    - 0.2
+    conductivity_w_mk: 0.06
+    specific_heat_j_kgk: 1300.0
+    firmness_index: 0.9
+  rubberised_coir:
+    aliases:
+    - coir
+    - rubberised coir
+    - rubberized coir
+    - coconut coir
+    - coir pad
+    - coir sheet
+    - koya
+    densities_kg_m3:
+    - 55
+    - 85
+    - 125
+    density_prior:
+    - 0.2
+    - 0.6
+    - 0.2
+    conductivity_w_mk: 0.08
+    specific_heat_j_kgk: 1400.0
+    firmness_index: 0.88
+  polyester_fibre:
+    aliases:
+    - polyfill
+    - polyester fibre
+    - fiber fill
+    - fibre fill
+    - comfort fibre
+    - hollow fibre
+    - batting
+    densities_kg_m3:
+    - 8
+    - 20
+    - 45
+    density_prior:
+    - 0.2
+    - 0.6
+    - 0.2
+    conductivity_w_mk: 0.04
+    specific_heat_j_kgk: 1200.0
+    firmness_index: 0.15
+  felt_insulator:
+    aliases:
+    - felt
+    - insulator pad
+    - spring felt
+    - cotton felt
+    - hard felt
+    - needle felt
+    densities_kg_m3:
+    - 70
+    - 140
+    - 260
+    density_prior:
+    - 0.2
+    - 0.6
+    - 0.2
+    conductivity_w_mk: 0.06
+    specific_heat_j_kgk: 1300.0
+    firmness_index: 0.82
+  pocket_spring_unit:
+    aliases:
+    - pocket spring
+    - pocketed coil
+    - independent spring
+    - individual pocket spring
+    - zoned pocket spring
+    densities_kg_m3:
+    - 30
+    - 55
+    - 90
+    density_prior:
+    - 0.2
+    - 0.6
+    - 0.2
+    conductivity_w_mk: 0.055
+    specific_heat_j_kgk: 500.0
+    firmness_index: 0.64
+  bonnell_spring_unit:
+    aliases:
+    - bonnell spring
+    - open coil
+    - interconnected spring
+    - innerspring
+    - bonnel spring
+    densities_kg_m3:
+    - 35
+    - 65
+    - 105
+    density_prior:
+    - 0.2
+    - 0.6
+    - 0.2
+    conductivity_w_mk: 0.06
+    specific_heat_j_kgk: 500.0
+    firmness_index: 0.74
+  polymer_grid:
+    aliases:
+    - polymer grid
+    - smart grid
+    - smartgrid
+    - hyper elastic polymer
+    - comfort grid
+    - micro grid
+    densities_kg_m3:
+    - 45
+    - 80
+    - 140
+    density_prior:
+    - 0.2
+    - 0.6
+    - 0.2
+    conductivity_w_mk: 0.2
+    specific_heat_j_kgk: 1800.0
+    firmness_index: 0.56
+  cover_fabric:
+    aliases:
+    - cover fabric
+    - knitted fabric
+    - woven fabric
+    - ticking
+    - mattress cover
+    - quilted cover
+    densities_kg_m3:
+    - 80
+    - 160
+    - 320
+    density_prior:
+    - 0.2
+    - 0.6
+    - 0.2
+    conductivity_w_mk: 0.05
+    specific_heat_j_kgk: 1300.0
+    firmness_index: 0.1

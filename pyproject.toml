@@ -3,19 +3,51 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mattress-thermal-prototype"
-version = "0.2.0"
-description = "Six-hour thermal and energy simulation for five mattress prototypes"
+name = "brixta-mattress-intelligence"
+version = "1.2.0"
+description = "Deterministic web evidence collection and probabilistic mattress construction intelligence"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11,<3.14"
+license = {text = "MIT"}
 dependencies = [
-    "matplotlib>=3.7",
-    "numpy>=1.24",
-    "streamlit>=1.35",
+    "lxml>=5.0",
+    "numpy>=1.26",
+    "pandas>=2.1",
+    "pydantic>=2.6",
+    "pypdf>=5.0",
+    "python-dotenv>=1.0",
+    "PyYAML>=6.0",
+    "scikit-learn>=1.4",
+    "streamlit>=1.40",
+    "XlsxWriter>=3.2",
+]
+
+[project.optional-dependencies]
+ui = []
+crawl = ["playwright>=1.50"]
+algorithms = ["ortools>=9.12"]
+api = ["fastapi>=0.115", "uvicorn[standard]>=0.34"]
+dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.9"]
+full = [
+    "playwright>=1.50",
+    "ortools>=9.12",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
 ]
 
 [project.scripts]
-mattress-sim = "mattress_thermal.cli:main"
+mattress-lab = "mattress_intelligence.cli:main"
+mattress-intel = "mattress_intelligence.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+mattress_intelligence = ["data/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

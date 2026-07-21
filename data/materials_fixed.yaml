@@ -1,0 +1,305 @@
+schema_version: 1
+notice: Engineering priors for screening and hypothesis generation only. Do not present these values as
+  manufacturer-disclosed specifications. Replace with supplier certificates, teardown measurements, and
+  laboratory data.
+materials:
+  quilt_foam:
+    display_name: Quilt / comfort PU foam
+    category: foam
+    aliases:
+    - quilt foam
+    - quiltec foam
+    - comfort foam
+    - soft pu foam
+    - plush foam
+    - euro top foam
+    density_min_kg_m3: 16.0
+    density_mode_kg_m3: 22.0
+    density_max_kg_m3: 30.0
+    thermal_conductivity_w_mk: 0.038
+    specific_heat_j_kg_k: 1400.0
+    typical_thickness_min_mm: 5.0
+    typical_thickness_max_mm: 40.0
+    firmness_tags:
+    - soft
+    - plush
+    prior_weight: 1.0
+  conventional_pu_foam:
+    display_name: Conventional polyurethane foam
+    category: foam
+    aliases:
+    - pu foam
+    - polyurethane foam
+    - support foam
+    - comfort foam
+    - flexible foam
+    density_min_kg_m3: 20.0
+    density_mode_kg_m3: 28.0
+    density_max_kg_m3: 40.0
+    thermal_conductivity_w_mk: 0.04
+    specific_heat_j_kg_k: 1400.0
+    typical_thickness_min_mm: 10.0
+    typical_thickness_max_mm: 180.0
+    firmness_tags:
+    - soft
+    - medium
+    - firm
+    prior_weight: 1.0
+  hr_foam:
+    display_name: High-resilience support foam
+    category: foam
+    aliases:
+    - hr foam
+    - high resilience foam
+    - resitec foam
+    - responsive foam
+    - reactive foam
+    - support pu foam
+    density_min_kg_m3: 28.0
+    density_mode_kg_m3: 40.0
+    density_max_kg_m3: 60.0
+    thermal_conductivity_w_mk: 0.041
+    specific_heat_j_kg_k: 1400.0
+    typical_thickness_min_mm: 20.0
+    typical_thickness_max_mm: 220.0
+    firmness_tags:
+    - medium
+    - medium-firm
+    - firm
+    prior_weight: 1.15
+  memory_foam:
+    display_name: Viscoelastic memory foam
+    category: foam
+    aliases:
+    - memory foam
+    - visco foam
+    - viscoelastic foam
+    - impression foam
+    - slow recovery foam
+    density_min_kg_m3: 35.0
+    density_mode_kg_m3: 55.0
+    density_max_kg_m3: 85.0
+    thermal_conductivity_w_mk: 0.04
+    specific_heat_j_kg_k: 1450.0
+    typical_thickness_min_mm: 10.0
+    typical_thickness_max_mm: 100.0
+    firmness_tags:
+    - soft
+    - medium
+    prior_weight: 1.1
+  gel_memory_foam:
+    display_name: Gel-infused memory foam
+    category: foam
+    aliases:
+    - gel memory foam
+    - cool gel foam
+    - gel infused foam
+    - thermo gel memory foam
+    - cooling memory foam
+    density_min_kg_m3: 38.0
+    density_mode_kg_m3: 58.0
+    density_max_kg_m3: 90.0
+    thermal_conductivity_w_mk: 0.045
+    specific_heat_j_kg_k: 1450.0
+    typical_thickness_min_mm: 10.0
+    typical_thickness_max_mm: 100.0
+    firmness_tags:
+    - soft
+    - medium
+    prior_weight: 0.9
+  natural_latex:
+    display_name: Natural or blended latex foam
+    category: latex
+    aliases:
+    - latex
+    - natural latex
+    - dunlop latex
+    - talalay latex
+    - latex foam
+    - rubber foam
+    density_min_kg_m3: 55.0
+    density_mode_kg_m3: 75.0
+    density_max_kg_m3: 100.0
+    thermal_conductivity_w_mk: 0.12
+    specific_heat_j_kg_k: 1800.0
+    typical_thickness_min_mm: 10.0
+    typical_thickness_max_mm: 160.0
+    firmness_tags:
+    - soft
+    - medium
+    - medium-firm
+    - firm
+    prior_weight: 1.0
+  rebonded_foam:
+    display_name: Rebonded / bonded foam
+    category: foam
+    aliases:
+    - rebonded foam
+    - bonded foam
+    - rebound foam
+    - recycled foam
+    - hard foam core
+    density_min_kg_m3: 65.0
+    density_mode_kg_m3: 90.0
+    density_max_kg_m3: 130.0
+    thermal_conductivity_w_mk: 0.06
+    specific_heat_j_kg_k: 1300.0
+    typical_thickness_min_mm: 20.0
+    typical_thickness_max_mm: 180.0
+    firmness_tags:
+    - firm
+    - extra-firm
+    prior_weight: 1.15
+  rubberised_coir:
+    display_name: Rubberised coir pad
+    category: natural_fibre
+    aliases:
+    - coir
+    - rubberised coir
+    - rubberized coir
+    - coconut coir
+    - coir pad
+    - coir sheet
+    - koya
+    density_min_kg_m3: 55.0
+    density_mode_kg_m3: 85.0
+    density_max_kg_m3: 125.0
+    thermal_conductivity_w_mk: 0.08
+    specific_heat_j_kg_k: 1400.0
+    typical_thickness_min_mm: 10.0
+    typical_thickness_max_mm: 100.0
+    firmness_tags:
+    - firm
+    - extra-firm
+    prior_weight: 1.0
+  polyester_fibre:
+    display_name: Polyester fibre / polyfill
+    category: fibre
+    aliases:
+    - polyfill
+    - polyester fibre
+    - fiber fill
+    - fibre fill
+    - comfort fibre
+    - hollow fibre
+    - batting
+    density_min_kg_m3: 8.0
+    density_mode_kg_m3: 20.0
+    density_max_kg_m3: 45.0
+    thermal_conductivity_w_mk: 0.04
+    specific_heat_j_kg_k: 1200.0
+    typical_thickness_min_mm: 3.0
+    typical_thickness_max_mm: 50.0
+    firmness_tags:
+    - soft
+    - plush
+    prior_weight: 0.85
+  felt_insulator:
+    display_name: Felt / spring insulator pad
+    category: fibre
+    aliases:
+    - felt
+    - insulator pad
+    - spring felt
+    - cotton felt
+    - hard felt
+    - needle felt
+    density_min_kg_m3: 70.0
+    density_mode_kg_m3: 140.0
+    density_max_kg_m3: 260.0
+    thermal_conductivity_w_mk: 0.06
+    specific_heat_j_kg_k: 1300.0
+    typical_thickness_min_mm: 3.0
+    typical_thickness_max_mm: 25.0
+    firmness_tags:
+    - firm
+    prior_weight: 0.8
+  pocket_spring_unit:
+    display_name: Pocket-spring support unit
+    category: spring
+    aliases:
+    - pocket spring
+    - pocketed coil
+    - independent spring
+    - individual pocket spring
+    - zoned pocket spring
+    density_min_kg_m3: 30.0
+    density_mode_kg_m3: 55.0
+    density_max_kg_m3: 90.0
+    thermal_conductivity_w_mk: 0.055
+    specific_heat_j_kg_k: 500.0
+    typical_thickness_min_mm: 100.0
+    typical_thickness_max_mm: 220.0
+    firmness_tags:
+    - medium
+    - medium-firm
+    - firm
+    prior_weight: 1.0
+    notes: Density and conductivity are effective bulk properties of the mostly-air spring assembly, not
+      solid steel.
+  bonnell_spring_unit:
+    display_name: Bonnell-spring support unit
+    category: spring
+    aliases:
+    - bonnell spring
+    - open coil
+    - interconnected spring
+    - innerspring
+    - bonnel spring
+    density_min_kg_m3: 35.0
+    density_mode_kg_m3: 65.0
+    density_max_kg_m3: 105.0
+    thermal_conductivity_w_mk: 0.06
+    specific_heat_j_kg_k: 500.0
+    typical_thickness_min_mm: 100.0
+    typical_thickness_max_mm: 220.0
+    firmness_tags:
+    - medium-firm
+    - firm
+    prior_weight: 0.95
+    notes: Effective bulk properties; actual mass depends on coil count, wire gauge, height, turns, and
+      border construction.
+  polymer_grid:
+    display_name: Hyper-elastic polymer grid
+    category: polymer
+    aliases:
+    - polymer grid
+    - smart grid
+    - smartgrid
+    - hyper elastic polymer
+    - comfort grid
+    - micro grid
+    density_min_kg_m3: 45.0
+    density_mode_kg_m3: 80.0
+    density_max_kg_m3: 140.0
+    thermal_conductivity_w_mk: 0.2
+    specific_heat_j_kg_k: 1800.0
+    typical_thickness_min_mm: 20.0
+    typical_thickness_max_mm: 100.0
+    firmness_tags:
+    - medium
+    - medium-firm
+    prior_weight: 0.75
+    notes: Effective bulk values depend strongly on wall geometry and void fraction.
+  cover_fabric:
+    display_name: Knitted or woven cover
+    category: textile
+    aliases:
+    - cover fabric
+    - knitted fabric
+    - woven fabric
+    - ticking
+    - mattress cover
+    - quilted cover
+    density_min_kg_m3: 80.0
+    density_mode_kg_m3: 160.0
+    density_max_kg_m3: 320.0
+    thermal_conductivity_w_mk: 0.05
+    specific_heat_j_kg_k: 1300.0
+    typical_thickness_min_mm: 1.0
+    typical_thickness_max_mm: 10.0
+    firmness_tags:
+    - surface
+    prior_weight: 0.6
+    notes: Use measured GSM and compressed thickness whenever available; volumetric density is highly
+      construction-dependent.

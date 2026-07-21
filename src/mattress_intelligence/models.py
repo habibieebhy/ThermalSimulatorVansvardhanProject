@@ -1,0 +1,280 @@
+"""Canonical data contracts used by every pipeline stage."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from enum import StrEnum
+from hashlib import sha256
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def stable_id(prefix: str, *parts: object) -> str:
+    normalized = "|".join(str(part).strip().casefold() for part in parts)
+    return f"{prefix}_{sha256(normalized.encode('utf-8')).hexdigest()[:16]}"
+
+
+class SourceKind(StrEnum):
+    OFFICIAL_PRODUCT = "official_product"
+    OFFICIAL_CATALOGUE = "official_catalogue"
+    OFFICIAL_OTHER = "official_other"
+    RETAILER = "retailer"
+    PATENT = "patent"
+    TEARDOWN = "teardown"
+    OTHER = "other"
+
+
+class ClaimStatus(StrEnum):
+    OBSERVED = "observed"
+    DERIVED = "derived"
+    INFERRED = "inferred"
+    UNKNOWN = "unknown"
+    CONTRADICTED = "contradicted"
+
+
+class SourceRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_id: str
+    company_id: str
+    url: str
+    title: str | None = None
+    kind: SourceKind = SourceKind.OTHER
+    is_official: bool = False
+    reliability: float = Field(default=0.5, ge=0.0, le=1.0)
+    retrieved_at: datetime = Field(default_factory=utc_now)
+    content_sha256: str
+    artifact_path: str | None = None
+    http_status: int = 200
+    content_type: str = "text/html"
+
+
+class EvidenceRef(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_id: str
+    locator: str | None = None
+    excerpt: str | None = Field(default=None, max_length=1_000)
+    reliability: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
+class LayerRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    layer_id: str | None = None
+    position: int = Field(ge=1)
+    marketing_name: str
+    normalized_material: str
+    thickness_mm: float | None = Field(default=None, gt=0)
+    density_kg_m3: float | None = Field(default=None, gt=0)
+    thickness_status: ClaimStatus = ClaimStatus.UNKNOWN
+    density_status: ClaimStatus = ClaimStatus.UNKNOWN
+    evidence: list[EvidenceRef] = Field(default_factory=list)
+
+    @field_validator("marketing_name", "normalized_material")
+    @classmethod
+    def non_empty(cls, value: str) -> str:
+        cleaned = " ".join(value.split())
+        if not cleaned:
+            raise ValueError("Layer names cannot be empty.")
+        return cleaned
+
+
+class VariantRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    variant_id: str | None = None
+    sku: str | None = None
+    size_name: str | None = None
+    width_mm: float | None = Field(default=None, gt=0)
+    length_mm: float | None = Field(default=None, gt=0)
+    thickness_mm: float | None = Field(default=None, gt=0)
+    weight_kg: float | None = Field(default=None, gt=0)
+    price: float | None = Field(default=None, ge=0)
+    currency: str | None = None
+    source_ids: list[str] = Field(default_factory=list)
+
+
+class ProductRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    product_id: str | None = None
+    company_id: str
+    company_name: str
+    brand: str
+    name: str
+    family: str | None = None
+    canonical_url: str | None = None
+    description: str = ""
+    firmness: str | None = None
+    total_thickness_mm: float | None = Field(default=None, gt=0)
+    product_weight_kg: float | None = Field(default=None, gt=0)
+    price: float | None = Field(default=None, ge=0)
+    currency: str | None = None
+    layers: list[LayerRecord] = Field(default_factory=list)
+    variants: list[VariantRecord] = Field(default_factory=list)
+    source_ids: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    extraction_method: Literal["json_ld", "heuristic", "llm", "imported", "merged"] = (
+        "heuristic"
+    )
+    extraction_confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    reviewed: bool = False
+
+    @field_validator("company_name", "brand", "name")
+    @classmethod
+    def required_text(cls, value: str) -> str:
+        cleaned = " ".join(value.split())
+        if not cleaned:
+            raise ValueError("Company, brand, and product name cannot be empty.")
+        return cleaned
+
+    @model_validator(mode="after")
+    def assign_ids(self) -> "ProductRecord":
+        if self.product_id is None:
+            self.product_id = stable_id("prd", self.company_id, self.brand, self.name)
+        for layer in self.layers:
+            if layer.layer_id is None:
+                layer.layer_id = stable_id("lyr", self.product_id, layer.position, layer.marketing_name)
+        for index, variant in enumerate(self.variants, start=1):
+            if variant.variant_id is None:
+                variant.variant_id = stable_id(
+                    "var", self.product_id, variant.sku or variant.size_name or index
+                )
+        return self
+
+    @property
+    def searchable_text(self) -> str:
+        layer_text = " ".join(
+            f"{layer.marketing_name} {layer.normalized_material}" for layer in self.layers
+        )
+        return " ".join(
+            filter(None, [self.brand, self.name, self.family, self.description, self.firmness, layer_text])
+        )
+
+
+class ClaimRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    claim_id: str
+    product_id: str
+    field_path: str
+    value: Any = None
+    unit: str | None = None
+    status: ClaimStatus
+    confidence: float = Field(ge=0.0, le=1.0)
+    evidence: list[EvidenceRef] = Field(default_factory=list)
+    method: str
+
+
+
+
+class EvidenceObservation(BaseModel):
+    """Atomic document-level fact captured without requiring a product match or LLM."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    observation_id: str
+    source_id: str
+    company_id: str
+    document_url: str
+    product_name_hint: str | None = None
+    field_path: str
+    value: Any = None
+    unit: str | None = None
+    normalized_material: str | None = None
+    method: Literal["json_ld", "meta", "regex", "table", "material_dictionary", "url"]
+    locator: str | None = None
+    excerpt: str | None = Field(default=None, max_length=1_000)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
+class CandidateLayer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    position: int
+    material: str
+    marketing_name: str
+    thickness_mm: int = Field(gt=0)
+    density_kg_m3: int = Field(gt=0)
+    conductivity_w_mk: float = Field(gt=0)
+    specific_heat_j_kgk: float = Field(gt=0)
+
+
+class ConfigurationCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    configuration_id: str
+    product_id: str
+    rank: int = 0
+    layers: list[CandidateLayer]
+    total_thickness_mm: int
+    estimated_weight_kg: float | None = None
+    posterior_probability: float = Field(default=0.0, ge=0.0, le=1.0)
+    confidence_score: float = Field(default=0.0, ge=0.0, le=100.0)
+    evidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    reasons: list[str] = Field(default_factory=list)
+    contradictions: list[str] = Field(default_factory=list)
+
+
+class CatalogueCoverage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    discovered_urls: int = 0
+    fetched_urls: int = 0
+    failed_urls: int = 0
+    product_pages: int = 0
+    unique_products: int = 0
+    variants: int = 0
+    official_source_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
+    estimated_coverage_percent: float = Field(default=0.0, ge=0.0, le=100.0)
+    limitations: list[str] = Field(default_factory=list)
+
+
+class CompanyResearchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    company_name: str
+    official_domain: str
+    market: str = "India"
+    brand_aliases: list[str] = Field(default_factory=list)
+    seed_urls: list[str] = Field(default_factory=list)
+    custom_search_queries: list[str] = Field(default_factory=list)
+    include_external_evidence: bool = False
+    use_search_grounding: bool = False
+    max_pages: int = Field(default=100, ge=1, le=10_000)
+    max_external_pages: int = Field(default=25, ge=0, le=2_000)
+    max_crawl_depth: int = Field(default=4, ge=0, le=20)
+    max_configurations_per_product: int = Field(default=10, ge=1, le=100)
+    respect_robots_txt: bool = True
+
+    @property
+    def company_id(self) -> str:
+        return stable_id("cmp", self.company_name, self.market)
+
+
+class ResearchResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    request: CompanyResearchRequest
+    started_at: datetime
+    completed_at: datetime
+    products: list[ProductRecord]
+    sources: list[SourceRecord]
+    claims: list[ClaimRecord]
+    observations: list[EvidenceObservation] = Field(default_factory=list)
+    configurations: list[ConfigurationCandidate]
+    similarity_matches: list[dict[str, Any]] = Field(default_factory=list)
+    discovery_log: list[dict[str, Any]] = Field(default_factory=list)
+    crawl_log: list[dict[str, Any]] = Field(default_factory=list)
+    recognition_log: list[dict[str, Any]] = Field(default_factory=list)
+    graph_edges: list[dict[str, Any]]
+    coverage: CatalogueCoverage
+    warnings: list[str] = Field(default_factory=list)
+    excel_path: str | None = None
