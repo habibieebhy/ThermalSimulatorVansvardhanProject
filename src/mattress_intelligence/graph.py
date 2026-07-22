@@ -6,6 +6,7 @@ from collections import defaultdict, deque
 from typing import Any
 
 from .models import (
+    AssetRecord,
     ClaimRecord,
     ConfigurationCandidate,
     EvidenceObservation,
@@ -40,11 +41,13 @@ class KnowledgeGraph:
         claims: list[ClaimRecord],
         configurations: list[ConfigurationCandidate],
         *,
+        assets: list[AssetRecord] | None = None,
         observations: list[EvidenceObservation] | None = None,
         similarity_matches: list[dict[str, Any]] | None = None,
     ) -> "KnowledgeGraph":
         result: list[dict[str, Any]] = []
         source_by_id = {source.source_id: source for source in sources}
+        asset_by_id = {asset.asset_id: asset for asset in assets or []}
         products_by_normalized_name = {
             normalized_name(product.name): str(product.product_id) for product in products
         }
@@ -76,10 +79,25 @@ class KnowledgeGraph:
                 if source_id in source_by_id:
                     result.append(edge(product_id, "SUPPORTED_BY", source_id))
 
+        for asset in assets or []:
+            result.append(
+                edge(
+                    asset.source_id,
+                    "HAS_ASSET",
+                    asset.asset_id,
+                    kind=str(asset.kind),
+                    discovery_method=asset.discovery_method,
+                    relevance_score=asset.relevance_score,
+                    object_uri=asset.object_uri,
+                )
+            )
+
         for claim in claims:
             result.append(edge(claim.product_id, "HAS_CLAIM", claim.claim_id, field=claim.field_path))
             for evidence_ref in claim.evidence:
                 result.append(edge(claim.claim_id, "SUPPORTED_BY", evidence_ref.source_id))
+                if evidence_ref.asset_id and evidence_ref.asset_id in asset_by_id:
+                    result.append(edge(claim.claim_id, "OBSERVED_IN_ASSET", evidence_ref.asset_id))
 
         for observation in observations or []:
             result.append(
@@ -92,6 +110,10 @@ class KnowledgeGraph:
                     confidence=observation.confidence,
                 )
             )
+            if observation.asset_id and observation.asset_id in asset_by_id:
+                result.append(
+                    edge(observation.asset_id, "HAS_OBSERVATION", observation.observation_id)
+                )
             if observation.normalized_material:
                 result.append(
                     edge(

@@ -1,4 +1,4 @@
-"""Optional standalone FastAPI service wrapper."""
+"""FastAPI service with synchronous and Celery-backed job endpoints."""
 
 from __future__ import annotations
 
@@ -9,11 +9,13 @@ from fastapi.responses import FileResponse
 
 from .models import CompanyResearchRequest, ResearchResult
 from .pipeline import MattressIntelligencePipeline
+from .settings import Settings
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="BRIXTA R&D API", version="1.2.0")
-    pipeline = MattressIntelligencePipeline()
+    settings = Settings()
+    app = FastAPI(title="BRIXTA Mattress Intelligence API", version="1.3.0")
+    pipeline = MattressIntelligencePipeline(settings)
 
     @app.get("/health")
     def health() -> dict:
@@ -21,7 +23,11 @@ def create_app() -> FastAPI:
             "status": "ok",
             "recognition_provider": pipeline.llm.name,
             "search_provider": pipeline.search_provider.name,
-            "deterministic_extraction": True,
+            "capture_strategy": settings.capture_strategy,
+            "database": "postgres/neon" if settings.postgres_enabled else "sqlite",
+            "object_store": "minio" if settings.object_storage_enabled else "local",
+            "celery_enabled": settings.celery_enabled,
+            "deterministic_analysis": True,
             "llm_downstream_analysis": False,
         }
 
@@ -44,7 +50,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         path = Path(result.excel_path or "")
         if not path.exists():
-            raise HTTPException(status_code=404, detail="Excel artifact is unavailable.")
+            raise HTTPException(status_code=404, detail="Excel artifact is unavailable on this API node.")
         return FileResponse(
             path,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -57,9 +63,42 @@ def create_app() -> FastAPI:
 
     @app.post("/v1/collect", response_model=ResearchResult)
     def collect(request: CompanyResearchRequest) -> ResearchResult:
-        """Collect and extract evidence without running engineering inference."""
-
         return pipeline.collect(request)
+
+    @app.post("/v1/jobs/collect", status_code=202)
+    def enqueue_collect(request: CompanyResearchRequest) -> dict[str, str]:
+        if not settings.celery_enabled:
+            raise HTTPException(status_code=503, detail="Celery is disabled. Set CELERY_ENABLED=true.")
+        from .tasks import enqueue_collection
+
+        task = enqueue_collection(request)
+        return {"task_id": task.id, "state": task.state}
+
+    @app.post("/v1/jobs/research", status_code=202)
+    def enqueue_research_job(request: CompanyResearchRequest) -> dict[str, str]:
+        if not settings.celery_enabled:
+            raise HTTPException(status_code=503, detail="Celery is disabled. Set CELERY_ENABLED=true.")
+        from .tasks import enqueue_research
+
+        task = enqueue_research(request)
+        return {"task_id": task.id, "state": task.state}
+
+    @app.get("/v1/jobs/{task_id}")
+    def job_status(task_id: str) -> dict[str, object]:
+        if not settings.celery_enabled:
+            raise HTTPException(status_code=503, detail="Celery is disabled. Set CELERY_ENABLED=true.")
+        from celery.result import AsyncResult
+        from .celery_app import celery_app
+
+        result = AsyncResult(task_id, app=celery_app)
+        payload: dict[str, object] = {"task_id": task_id, "state": result.state}
+        if result.successful():
+            payload["result"] = result.result
+        elif result.failed():
+            payload["error"] = str(result.result)
+        elif isinstance(result.info, dict):
+            payload["progress"] = result.info
+        return payload
 
     return app
 

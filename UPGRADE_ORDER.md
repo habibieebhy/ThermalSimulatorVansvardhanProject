@@ -1,14 +1,14 @@
-# Upgrade order from the uploaded thermal build
+# Upgrade order from v1.2.x
 
-1. `.env.example` and `settings.py` — OpenAI key/model and recognition threshold.
-2. `llm.py` — Responses API web search, result triage, document recognition, strict schemas.
-3. `search.py` — provider routing for OpenAI/Tavily/Gemini/none.
-4. `crawler.py` — product-first URL priority and rejection of location/store/category SEO pages.
-5. `extraction.py` — exact-product admission, bounded thickness parsing, recognition log.
-6. `models.py` — recognition-log result schema and deterministic observation model.
-7. `pipeline.py` — strict LLM handoff followed by deterministic algorithms.
-8. `similarity.py`, `configurations.py`, `inference.py`, `graph.py` — algorithmic analysis only.
-9. `storage.py` and `exporter.py` — Recognition Log, persistent corpus, Excel/SQLite output.
-10. `cli.py`, `api.py`, and Streamlit pages — controls and visibility.
-11. `pyproject.toml`, `VERSION`, tests, and docs — package/version/validation.
-12. `APPLY_PATCH.sh` — removes the old thermal system, reinstalls, and runs all tests.
+1. Back up `.env`, `data/`, `outputs/`, and `artifacts/`.
+2. Extract the v1.3 patch into the project root.
+3. Run `bash APPLY_PATCH.sh`.
+4. Install Tesseract and Playwright Chromium.
+5. Add Jina, Firecrawl, OpenAI, Neon, MinIO, Redis/Celery settings to `.env`.
+6. Run connection checks.
+7. Run a small collection with 10–20 pages and 5–10 vision assets.
+8. Review Discovery, Crawl, Acquisition, Assets, Recognition, and Observations sheets.
+9. Increase page/asset budgets only after the small run is clean.
+10. Run deterministic research after the evidence workbook is reviewed.
+
+Old SQLite runs remain readable. New asset/OCR fields default to empty during payload migration.

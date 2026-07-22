@@ -1,12 +1,43 @@
+# Python
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.ruff_cache/
+
+# Virtual environments
 .venv/
+
+# Build artifacts
 dist/
 build/
 *.egg-info/
-outputs/*.csv
-outputs/*.png
+
+# Environment
 .env
+.env.*
 .env.example
 
+# Runtime artifacts
+artifacts/
+
+# Databases
+data/*
+!data/.gitkeep
+!data/README.md
+
+# Example datasets
+examples/*
+!examples/.gitkeep
+!examples/README.md
+
+# Generated outputs
+outputs/*
+!outputs/.gitkeep
+!outputs/README.md
+
+# SQLite
+*.sqlite3
+*.sqlite3-*
+
+# macOS
+.DS_Store

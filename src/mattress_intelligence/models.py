@@ -29,6 +29,16 @@ class SourceKind(StrEnum):
     OTHER = "other"
 
 
+class AssetKind(StrEnum):
+    PRODUCT_IMAGE = "product_image"
+    LAYER_DIAGRAM = "layer_diagram"
+    CATALOGUE_PAGE = "catalogue_page"
+    SPECIFICATION_TABLE = "specification_table"
+    SCREENSHOT = "screenshot"
+    API_PAYLOAD = "api_payload"
+    OTHER_IMAGE = "other_image"
+
+
 class ClaimStatus(StrEnum):
     OBSERVED = "observed"
     DERIVED = "derived"
@@ -50,14 +60,46 @@ class SourceRecord(BaseModel):
     retrieved_at: datetime = Field(default_factory=utc_now)
     content_sha256: str
     artifact_path: str | None = None
+    object_uri: str | None = None
+    capture_method: str = "http"
     http_status: int = 200
     content_type: str = "text/html"
+
+
+class AssetRecord(BaseModel):
+    """Image/PDF-page asset with immutable source and storage provenance."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    asset_id: str
+    source_id: str
+    company_id: str
+    page_url: str
+    asset_url: str
+    kind: AssetKind = AssetKind.OTHER_IMAGE
+    discovery_method: str
+    alt_text: str | None = None
+    width: int | None = Field(default=None, ge=1)
+    height: int | None = Field(default=None, ge=1)
+    content_type: str = "application/octet-stream"
+    content_sha256: str
+    local_path: str | None = None
+    object_uri: str | None = None
+    relevance_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    vision_provider: str | None = None
+    vision_model: str | None = None
+    vision_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    vision_payload: dict[str, Any] | None = None
+    ocr_engine: str | None = None
+    ocr_text: str | None = None
+    ocr_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class EvidenceRef(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source_id: str
+    asset_id: str | None = None
     locator: str | None = None
     excerpt: str | None = Field(default=None, max_length=1_000)
     reliability: float = Field(default=0.5, ge=0.0, le=1.0)
@@ -120,9 +162,9 @@ class ProductRecord(BaseModel):
     variants: list[VariantRecord] = Field(default_factory=list)
     source_ids: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
-    extraction_method: Literal["json_ld", "heuristic", "llm", "imported", "merged"] = (
-        "heuristic"
-    )
+    extraction_method: Literal[
+        "json_ld", "heuristic", "llm", "vision", "imported", "merged"
+    ] = "heuristic"
     extraction_confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     reviewed: bool = False
 
@@ -154,7 +196,10 @@ class ProductRecord(BaseModel):
             f"{layer.marketing_name} {layer.normalized_material}" for layer in self.layers
         )
         return " ".join(
-            filter(None, [self.brand, self.name, self.family, self.description, self.firmness, layer_text])
+            filter(
+                None,
+                [self.brand, self.name, self.family, self.description, self.firmness, layer_text],
+            )
         )
 
 
@@ -172,15 +217,14 @@ class ClaimRecord(BaseModel):
     method: str
 
 
-
-
 class EvidenceObservation(BaseModel):
-    """Atomic document-level fact captured without requiring a product match or LLM."""
+    """Atomic fact captured without requiring a complete product match."""
 
     model_config = ConfigDict(extra="forbid")
 
     observation_id: str
     source_id: str
+    asset_id: str | None = None
     company_id: str
     document_url: str
     product_name_hint: str | None = None
@@ -188,7 +232,20 @@ class EvidenceObservation(BaseModel):
     value: Any = None
     unit: str | None = None
     normalized_material: str | None = None
-    method: Literal["json_ld", "meta", "regex", "table", "material_dictionary", "url"]
+    method: Literal[
+        "json_ld",
+        "meta",
+        "regex",
+        "table",
+        "material_dictionary",
+        "url",
+        "jina_reader",
+        "firecrawl",
+        "vision",
+        "pdf_page",
+        "ocr",
+        "network_json",
+    ]
     locator: str | None = None
     excerpt: str | None = Field(default=None, max_length=1_000)
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
@@ -204,6 +261,22 @@ class CandidateLayer(BaseModel):
     density_kg_m3: int = Field(gt=0)
     conductivity_w_mk: float = Field(gt=0)
     specific_heat_j_kgk: float = Field(gt=0)
+
+class SimulationScreeningResult(BaseModel):
+    """Comparative passive thermal screening metrics for one configuration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    configuration_id: str
+
+    thermal_resistance_m2k_w: float = Field(ge=0.0)
+    areal_heat_capacity_kj_m2k: float = Field(ge=0.0)
+
+    estimated_final_interface_temperature_c: float
+    comfort_zone_minutes: float = Field(ge=0.0)
+    peak_interface_temperature_c: float
+
+    screening_only: bool = True
 
 
 class ConfigurationCandidate(BaseModel):
@@ -231,6 +304,8 @@ class CatalogueCoverage(BaseModel):
     product_pages: int = 0
     unique_products: int = 0
     variants: int = 0
+    assets: int = 0
+    vision_assets: int = 0
     official_source_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
     estimated_coverage_percent: float = Field(default=0.0, ge=0.0, le=100.0)
     limitations: list[str] = Field(default_factory=list)
@@ -247,9 +322,14 @@ class CompanyResearchRequest(BaseModel):
     custom_search_queries: list[str] = Field(default_factory=list)
     include_external_evidence: bool = False
     use_search_grounding: bool = False
+    discover_assets: bool = True
+    analyze_assets_with_vision: bool = True
     max_pages: int = Field(default=100, ge=1, le=10_000)
     max_external_pages: int = Field(default=25, ge=0, le=2_000)
     max_crawl_depth: int = Field(default=4, ge=0, le=20)
+    max_assets_per_document: int = Field(default=30, ge=0, le=500)
+    max_vision_assets: int = Field(default=80, ge=0, le=5_000)
+    max_pdf_pages: int = Field(default=100, ge=1, le=2_000)
     max_configurations_per_product: int = Field(default=10, ge=1, le=100)
     respect_robots_txt: bool = True
 
@@ -267,12 +347,14 @@ class ResearchResult(BaseModel):
     completed_at: datetime
     products: list[ProductRecord]
     sources: list[SourceRecord]
+    assets: list[AssetRecord] = Field(default_factory=list)
     claims: list[ClaimRecord]
     observations: list[EvidenceObservation] = Field(default_factory=list)
     configurations: list[ConfigurationCandidate]
     similarity_matches: list[dict[str, Any]] = Field(default_factory=list)
     discovery_log: list[dict[str, Any]] = Field(default_factory=list)
     crawl_log: list[dict[str, Any]] = Field(default_factory=list)
+    acquisition_log: list[dict[str, Any]] = Field(default_factory=list)
     recognition_log: list[dict[str, Any]] = Field(default_factory=list)
     graph_edges: list[dict[str, Any]]
     coverage: CatalogueCoverage

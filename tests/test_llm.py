@@ -93,6 +93,49 @@ class OpenAIRecognitionTests(unittest.TestCase):
         self.assertFalse(provider.discovery_log[0]["accepted"])
         self.assertTrue(provider.discovery_log[1]["accepted"])
 
+    def test_openai_document_and_image_requests_omit_unsupported_none_reasoning(self) -> None:
+        class CapturingOpenAI(OpenAIProvider):
+            captured: list[dict]
+
+            def __init__(self) -> None:
+                super().__init__(api_key="not-used")
+                self.captured = []
+
+            def _request(self, payload: dict) -> dict:
+                self.captured.append(payload)
+                schema_name = payload["text"]["format"]["name"]
+                if schema_name == "mattress_document_recognition":
+                    body = {
+                        "document_type": "other",
+                        "is_product_bearing": False,
+                        "recognition_confidence": 0.0,
+                        "rejection_reason": "No product",
+                        "products": [],
+                        "document_warnings": [],
+                    }
+                else:
+                    body = {
+                        "is_relevant": False,
+                        "asset_type": "other",
+                        "confidence": 0.0,
+                        "products": [],
+                        "warnings": [],
+                    }
+                import json
+
+                return {"output_text": json.dumps(body)}
+
+        provider = CapturingOpenAI()
+        provider.recognize_document("https://example.test/page", "No product")
+        provider.recognize_image(
+            image_bytes=b"fake-image",
+            content_type="image/png",
+            source_url="https://example.test/page",
+        )
+        self.assertEqual(len(provider.captured), 2)
+        self.assertNotIn("reasoning", provider.captured[0])
+        self.assertNotIn("reasoning", provider.captured[1])
+
     def test_openai_recognition_rejects_non_specific_products(self) -> None:
         class FakeOpenAI(OpenAIProvider):
             def _structured_request(self, **kwargs) -> dict:

@@ -31,7 +31,7 @@ class NormalizationTests(unittest.TestCase):
         self.assertEqual(parse_density_kg_m3("HR foam density 32 kg/m³"), 32.0)
 
     def test_product_and_child_ids_are_deterministic(self) -> None:
-        payload = dict(
+        left = ProductRecord(
             company_id="cmp_1",
             company_name="Example",
             brand="Example",
@@ -44,11 +44,23 @@ class NormalizationTests(unittest.TestCase):
                 )
             ],
         )
-        left = ProductRecord(**payload)
-        right = ProductRecord(**payload)
+
+        right = ProductRecord(
+            company_id="cmp_1",
+            company_name="Example",
+            brand="Example",
+            name="Alpha Mattress",
+            layers=[
+                LayerRecord(
+                    position=1,
+                    marketing_name="HR Foam",
+                    normalized_material="hr_foam",
+                )
+            ],
+        )
+
         self.assertEqual(left.product_id, right.product_id)
         self.assertEqual(left.layers[0].layer_id, right.layers[0].layer_id)
-
 
 if __name__ == "__main__":
     unittest.main()

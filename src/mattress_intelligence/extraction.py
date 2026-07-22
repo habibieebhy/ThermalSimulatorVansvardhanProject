@@ -247,6 +247,8 @@ def source_from_document(
         retrieved_at=datetime.fromtimestamp(document.retrieved_at_epoch, tz=timezone.utc),
         content_sha256=document.sha256,
         artifact_path=document.artifact_path,
+        object_uri=document.object_uri,
+        capture_method=document.capture_method,
         http_status=document.status,
         content_type=document.content_type,
     )

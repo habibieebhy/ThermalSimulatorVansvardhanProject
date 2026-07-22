@@ -1,28 +1,16 @@
-"""Streamlit entry point for the mattress evidence and inference platform."""
+"""Streamlit entry point for BRIXTA Mattress Product Intelligence."""
 
 from __future__ import annotations
 
-import streamlit as st
+from pathlib import Path
+import sys
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+SRC_ROOT = PROJECT_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from mattress_intelligence.streamlit_app import render_app
 
 
-st.set_page_config(
-    page_title="BRIXTA Mattress Intelligence Lab",
-    page_icon="🔎",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-home = st.Page("pages/0_Home.py", title="Research Workflow", icon="🧭", default=True)
-collection = st.Page(
-    "pages/1_Evidence_Collection_Lab.py",
-    title="Evidence & Algorithms Lab",
-    icon="🔎",
-)
-
-navigation = st.navigation(
-    {
-        "Start here": [home],
-        "Research tools": [collection],
-    }
-)
-navigation.run()
+render_app()

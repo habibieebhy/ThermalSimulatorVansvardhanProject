@@ -79,6 +79,9 @@ def _layer_rows(result: ResearchResult) -> list[dict[str, Any]]:
                     "evidence_source_ids": ", ".join(
                         item.source_id for item in layer.evidence
                     ),
+                    "evidence_asset_ids": ", ".join(
+                        item.asset_id for item in layer.evidence if item.asset_id
+                    ),
                     "evidence_excerpts": " | ".join(
                         item.excerpt or "" for item in layer.evidence if item.excerpt
                     ),
@@ -113,6 +116,16 @@ def _configuration_layer_rows(result: ResearchResult) -> list[dict[str, Any]]:
         for layer in candidate.layers:
             rows.append({"configuration_id": candidate.configuration_id, **layer.model_dump()})
     return rows
+
+
+def _asset_rows(result: ResearchResult) -> list[dict[str, Any]]:
+    return [
+        {
+            **asset.model_dump(exclude={"vision_payload"}),
+            "vision_payload": _flat(asset.vision_payload),
+        }
+        for asset in result.assets
+    ]
 
 
 def _observation_rows(result: ResearchResult) -> list[dict[str, Any]]:
@@ -191,6 +204,8 @@ def _frames(result: ResearchResult) -> dict[str, pd.DataFrame]:
         {"key": "started_at", "value": result.started_at.isoformat()},
         {"key": "completed_at", "value": result.completed_at.isoformat()},
         {"key": "web_search_enabled", "value": result.request.use_search_grounding},
+        {"key": "assets", "value": len(result.assets)},
+        {"key": "vision_assets", "value": sum(1 for item in result.assets if item.vision_payload)},
         {"key": "deterministic_observations", "value": len(result.observations)},
         {"key": "recognition_events", "value": len(result.recognition_log)},
         {
@@ -212,6 +227,7 @@ def _frames(result: ResearchResult) -> dict[str, pd.DataFrame]:
         "Products": pd.DataFrame(_product_rows(result)),
         "Variants": pd.DataFrame(_variant_rows(result)),
         "Layers": pd.DataFrame(_layer_rows(result)),
+        "Assets": pd.DataFrame(_asset_rows(result)),
         "Evidence Observations": pd.DataFrame(_observation_rows(result)),
         "Observed Claims": pd.DataFrame(claim_rows),
         "Configurations": pd.DataFrame(_configuration_rows(result)),
@@ -219,6 +235,7 @@ def _frames(result: ResearchResult) -> dict[str, pd.DataFrame]:
         "Similar Products": pd.DataFrame(result.similarity_matches),
         "Discovery Log": pd.DataFrame(result.discovery_log),
         "Crawl Log": pd.DataFrame(result.crawl_log),
+        "Acquisition Log": pd.DataFrame(result.acquisition_log),
         "Recognition Log": pd.DataFrame(result.recognition_log),
         "Evidence Sources": pd.DataFrame(source_rows),
         "Graph Edges": pd.DataFrame(graph_rows),
@@ -311,19 +328,23 @@ def export_excel(result: ResearchResult, output_path: Path) -> Path:
         dashboard.write(6, 2, len(result.sources))
         dashboard.write(7, 1, "Evidence observations", metric_format)
         dashboard.write(7, 2, len(result.observations))
-        dashboard.write(8, 1, "Recognized product documents", metric_format)
-        dashboard.write(8, 2, sum(1 for item in result.recognition_log if item.get("accepted")))
-        dashboard.write(9, 1, "Estimated catalogue coverage", metric_format)
+        dashboard.write(8, 1, "Captured assets", metric_format)
+        dashboard.write(8, 2, len(result.assets))
+        dashboard.write(9, 1, "Vision-analyzed assets", metric_format)
+        dashboard.write(9, 2, sum(1 for item in result.assets if item.vision_payload))
+        dashboard.write(10, 1, "Recognized product documents", metric_format)
+        dashboard.write(10, 2, sum(1 for item in result.recognition_log if item.get("accepted")))
+        dashboard.write(11, 1, "Estimated catalogue coverage", metric_format)
         dashboard.write(
-            9,
+            11,
             2,
             result.coverage.estimated_coverage_percent / 100.0,
             percentage,
         )
-        dashboard.write(10, 1, "Candidate configurations", metric_format)
-        dashboard.write(10, 2, len(result.configurations))
+        dashboard.write(12, 1, "Candidate configurations", metric_format)
+        dashboard.write(12, 2, len(result.configurations))
         dashboard.write(
-            12,
+            14,
             1,
             "Important: observations require context review; inferred values are hypotheses.",
             warning,

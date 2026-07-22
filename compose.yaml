@@ -1,27 +1,87 @@
 services:
-  mattress-lab-ui:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    restart: unless-stopped
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on: [minio]
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 ${MINIO_ACCESS_KEY:-minioadmin} ${MINIO_SECRET_KEY:-minioadmin}; do sleep 2; done;
+      mc mb --ignore-existing local/${MINIO_BUCKET:-mattress-intelligence};
+      exit 0;"
+
+  ui:
     build: .
-    env_file:
-      - path: .env
-        required: false
+    env_file: [.env]
+    environment:
+      MINIO_ENDPOINT: minio:9000
+      CELERY_ENABLED: "true"
+      CELERY_ALWAYS_EAGER: "false"
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
     ports:
       - "8501:8501"
     volumes:
       - ./data:/app/data
       - ./outputs:/app/outputs
       - ./artifacts:/app/artifacts
+    depends_on: [redis, minio-init]
     restart: unless-stopped
 
-  mattress-lab-api:
+  api:
     build: .
     command: ["uvicorn", "mattress_intelligence.api:app", "--host", "0.0.0.0", "--port", "8000"]
-    env_file:
-      - path: .env
-        required: false
+    env_file: [.env]
+    environment:
+      MINIO_ENDPOINT: minio:9000
+      CELERY_ENABLED: "true"
+      CELERY_ALWAYS_EAGER: "false"
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
     ports:
       - "8000:8000"
     volumes:
       - ./data:/app/data
       - ./outputs:/app/outputs
       - ./artifacts:/app/artifacts
+    depends_on: [redis, minio-init]
     restart: unless-stopped
+
+  worker:
+    build: .
+    command: ["celery", "-A", "mattress_intelligence.celery_app:celery_app", "worker", "--loglevel=INFO", "--concurrency=2"]
+    env_file: [.env]
+    environment:
+      MINIO_ENDPOINT: minio:9000
+      CELERY_ENABLED: "true"
+      CELERY_ALWAYS_EAGER: "false"
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    volumes:
+      - ./data:/app/data
+      - ./outputs:/app/outputs
+      - ./artifacts:/app/artifacts
+    depends_on: [redis, minio-init]
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  minio-data:

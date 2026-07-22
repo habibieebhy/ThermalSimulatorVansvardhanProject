@@ -6,6 +6,7 @@ They never generate configurations, Bayesian posteriors, graph conclusions, or c
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import time
@@ -127,6 +128,85 @@ DOCUMENT_RECOGNITION_SCHEMA = {
 
 # Backward-compatible name used by older tests/integrations.
 DOCUMENT_EXTRACTION_SCHEMA = DOCUMENT_RECOGNITION_SCHEMA
+
+VISION_EVIDENCE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "is_relevant": {"type": "boolean"},
+        "asset_type": {
+            "type": "string",
+            "enum": [
+                "layer_diagram",
+                "catalogue_page",
+                "specification_table",
+                "product_image",
+                "other",
+            ],
+        },
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "products": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "is_specific_model": {"type": "boolean"},
+                    "brand": {"type": ["string", "null"]},
+                    "name": {"type": ["string", "null"]},
+                    "family": {"type": ["string", "null"]},
+                    "description": {"type": ["string", "null"]},
+                    "firmness": {"type": ["string", "null"]},
+                    "total_thickness_mm": {"type": ["number", "null"]},
+                    "product_weight_kg": {"type": ["number", "null"]},
+                    "price": {"type": ["number", "null"]},
+                    "currency": {"type": ["string", "null"]},
+                    "visible_text": {"type": ["string", "null"]},
+                    "layers": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "position": {"type": "integer"},
+                                "marketing_name": {"type": "string"},
+                                "normalized_material": {"type": ["string", "null"]},
+                                "thickness_mm": {"type": ["number", "null"]},
+                                "density_kg_m3": {"type": ["number", "null"]},
+                                "visible_label": {"type": "string"},
+                            },
+                            "required": [
+                                "position",
+                                "marketing_name",
+                                "normalized_material",
+                                "thickness_mm",
+                                "density_kg_m3",
+                                "visible_label",
+                            ],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "required": [
+                    "is_specific_model",
+                    "brand",
+                    "name",
+                    "family",
+                    "description",
+                    "firmness",
+                    "total_thickness_mm",
+                    "product_weight_kg",
+                    "price",
+                    "currency",
+                    "visible_text",
+                    "layers",
+                ],
+                "additionalProperties": False,
+            },
+        },
+        "warnings": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["is_relevant", "asset_type", "confidence", "products", "warnings"],
+    "additionalProperties": False,
+}
+
 
 SEARCH_DISCOVERY_SCHEMA = {
     "type": "object",
@@ -250,6 +330,16 @@ class LLMProvider(ABC):
             "document_warnings": [],
         }
 
+    def recognize_image(
+        self,
+        *,
+        image_bytes: bytes,
+        content_type: str,
+        source_url: str,
+        page_context: str = "",
+    ) -> dict:
+        raise LLMError(f"Image recognition is unavailable for provider {self.name}.")
+
     def check_connection(self) -> dict:
         raise LLMError(f"Connection checks are unavailable for provider {self.name}.")
 
@@ -279,7 +369,7 @@ class OpenAIProvider(LLMProvider):
     """OpenAI Responses API adapter for search and explicit product recognition only."""
 
     api_key: str
-    model: str = "gpt-5.4-nano"
+    model: str = "gpt-5-nano"
     timeout_seconds: float = 90.0
     max_search_queries: int = 6
     max_retries: int = 3
@@ -296,7 +386,7 @@ class OpenAIProvider(LLMProvider):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "brixta-mattress-intelligence/1.2",
+            "User-Agent": "brixta-mattress-intelligence/1.3",
         }
 
     def _request(self, payload: dict) -> dict:
@@ -351,16 +441,17 @@ class OpenAIProvider(LLMProvider):
         schema_name: str,
         schema: dict,
         use_web_search: bool,
-        reasoning_effort: str,
+        reasoning_effort: str | None = None,
     ) -> dict:
         payload: dict = {
             "model": self.model,
             "instructions": instructions,
             "input": input_text,
-            "reasoning": {"effort": reasoning_effort},
             "text": {"format": _json_schema_format(schema_name, schema)},
             "store": False,
         }
+        if reasoning_effort is not None:
+            payload["reasoning"] = {"effort": reasoning_effort}
         if use_web_search:
             payload["tools"] = [{"type": "web_search"}]
             payload["tool_choice"] = "auto"
@@ -488,7 +579,7 @@ DOCUMENT TEXT:
             schema_name="mattress_document_recognition",
             schema=DOCUMENT_RECOGNITION_SCHEMA,
             use_web_search=False,
-            reasoning_effort="none",
+            reasoning_effort=None,
         )
         admitted: list[dict] = []
         for item in payload.get("products") or []:
@@ -497,6 +588,51 @@ DOCUMENT TEXT:
         payload["products"] = admitted
         payload["is_product_bearing"] = bool(admitted)
         return payload
+
+    def recognize_image(
+        self,
+        *,
+        image_bytes: bytes,
+        content_type: str,
+        source_url: str,
+        page_context: str = "",
+    ) -> dict:
+        encoded = base64.b64encode(image_bytes).decode("ascii")
+        data_url = f"data:{content_type.split(';', 1)[0]};base64,{encoded}"
+        prompt = f"""
+SOURCE PAGE OR CATALOGUE: {source_url}
+PAGE CONTEXT (may be incomplete):
+{page_context[:8_000]}
+
+Read only text and construction information visibly present in this image. Identify exact
+mattress models when the model name is visible. For layer diagrams, preserve the visible
+top-to-bottom order and exact marketing labels. Convert explicit lengths to millimetres and
+explicit density values to kg/m^3. Never infer hidden materials, chemistry, density, thickness,
+weight, price, or product identity. Use null when a value is not visibly present.
+""".strip()
+        payload = {
+            "model": self.model,
+            "instructions": (
+                "You are an evidence transcription worker. The output is observed image evidence, "
+                "not mattress construction analysis. Do not guess or complete missing labels."
+            ),
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": prompt},
+                        {"type": "input_image", "image_url": data_url, "detail": "high"},
+                    ],
+                }
+            ],
+            "text": {
+                "format": _json_schema_format(
+                    "mattress_image_evidence", VISION_EVIDENCE_SCHEMA
+                )
+            },
+            "store": False,
+        }
+        return _extract_json_text(self._response_text(self._request(payload)))
 
     def extract_product(self, url: str, page_text: str) -> dict | None:
         products = self.extract_products(url, page_text)
@@ -533,7 +669,7 @@ class GeminiProvider(LLMProvider):
             "Content-Type": "application/json",
             "Accept": "application/json",
             "x-goog-api-key": self.api_key,
-            "x-goog-api-client": "brixta-mattress-intelligence/1.2",
+            "x-goog-api-client": "brixta-mattress-intelligence/1.3",
         }
 
     def _request(self, payload: dict) -> dict:
@@ -706,7 +842,7 @@ def build_llm_provider(
     max_search_queries: int = 6,
     *,
     openai_api_key: str | None = None,
-    openai_model: str = "gpt-5.4-nano",
+    openai_model: str = "gpt-5-nano",
     timeout_seconds: float = 90.0,
 ) -> LLMProvider:
     normalized = provider.strip().casefold()

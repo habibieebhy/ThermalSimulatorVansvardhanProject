@@ -30,7 +30,6 @@ class PipelineTests(unittest.TestCase):
                 company_name="Sleepwell Demo",
                 official_domain="https://example.invalid/sleepwell",
                 max_configurations_per_product=5,
-                simulate_top_configurations=2,
             )
             output = root / "outputs" / "demo.xlsx"
             result = pipeline.import_catalogue(
@@ -72,7 +71,7 @@ class PipelineTests(unittest.TestCase):
             )
             self.assertEqual(len(result.products), 3)
             self.assertFalse(result.configurations)
-            self.assertFalse(result.simulations)
+            self.assertFalse(result.configurations)
             self.assertTrue(any("Collection-only" in warning for warning in result.warnings))
 
 
