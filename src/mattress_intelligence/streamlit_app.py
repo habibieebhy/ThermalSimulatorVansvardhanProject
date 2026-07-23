@@ -1,14 +1,28 @@
-"""One-click Streamlit control plane for background mattress product research."""
+"""Multi-session Streamlit control plane for background mattress product research."""
 
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import pandas as pd
 import streamlit as st
 
+from .exporter import (
+    primary_table_frame,
+    table_csv_bytes,
+    table_excel_bytes,
+    table_json_bytes,
+)
+from .jobs import (
+    ACTIVE_JOB_STATUSES,
+    ResearchJob,
+    ResearchJobStore,
+    build_job_output_dir,
+)
 from .models import ProductRecord, ResearchResult, SourceRecord
 from .settings import Settings
 from .storage import build_repository
@@ -24,21 +38,9 @@ _STAGE_LABELS = {
     "assets": "Downloading images and catalogue pages; running OCR and vision",
     "resolving": "Resolving duplicate product records and evidence",
     "analyzing": "Generating evidence-ranked construction configurations",
-    "exporting": "Saving the complete run and Excel workbook",
+    "exporting": "Saving the complete run and downloads",
     "completed": "Research complete",
-}
-
-_STAGE_PROGRESS = {
-    "queued": 3,
-    "initializing": 7,
-    "discovering": 15,
-    "crawling": 35,
-    "extracting": 58,
-    "assets": 72,
-    "resolving": 82,
-    "analyzing": 90,
-    "exporting": 97,
-    "completed": 100,
+    "failed": "Research failed",
 }
 
 
@@ -49,23 +51,7 @@ def _safe_dataframe(rows: list[dict[str, Any]], *, empty_message: str) -> None:
         st.caption(empty_message)
 
 
-def _product_summary(product: ProductRecord) -> dict[str, object]:
-    return {
-        "Product": product.name,
-        "Family": product.family,
-        "Firmness": product.firmness,
-        "Thickness (mm)": product.total_thickness_mm,
-        "Price": product.price,
-        "Currency": product.currency,
-        "Layers": len(product.layers),
-        "Variants": len(product.variants),
-        "Confidence": round(product.extraction_confidence, 3),
-        "URL": product.canonical_url,
-    }
-
-
 def _source_label(source_by_id: dict[str, SourceRecord], source_id: str) -> str:
-    """Return a stable human-readable label for an observation source."""
     source = source_by_id.get(source_id)
     if source is None:
         return source_id
@@ -116,7 +102,80 @@ def _render_product(product: ProductRecord, *, expanded: bool) -> None:
         )
 
 
-def _render_result(result: ResearchResult) -> None:
+def _filtered_primary_table(result: ResearchResult) -> pd.DataFrame:
+    frame = primary_table_frame(result)
+    if frame.empty:
+        return frame
+
+    filter_columns = st.columns([2, 1, 1])
+    query = filter_columns[0].text_input(
+        "Search the table",
+        placeholder="Product, family, firmness, material...",
+        key=f"product_search_{result.run_id}",
+    ).strip()
+    family_options = sorted(
+        {str(value) for value in frame["Family"].dropna().tolist() if str(value).strip()}
+    )
+    firmness_options = sorted(
+        {str(value) for value in frame["Firmness"].dropna().tolist() if str(value).strip()}
+    )
+    selected_families = filter_columns[1].multiselect(
+        "Family",
+        family_options,
+        key=f"product_family_{result.run_id}",
+    )
+    selected_firmness = filter_columns[2].multiselect(
+        "Firmness",
+        firmness_options,
+        key=f"product_firmness_{result.run_id}",
+    )
+
+    filtered = frame.copy()
+    if query:
+        searchable = filtered.fillna("").astype(str).agg(" ".join, axis=1)
+        filtered = filtered[searchable.str.contains(query, case=False, regex=False)]
+    if selected_families:
+        filtered = filtered[filtered["Family"].astype(str).isin(selected_families)]
+    if selected_firmness:
+        filtered = filtered[filtered["Firmness"].astype(str).isin(selected_firmness)]
+    return filtered.reset_index(drop=True)
+
+
+def _render_primary_table(result: ResearchResult) -> None:
+    st.markdown("### Download-ready product table")
+    st.caption(
+        "The downloads below are generated from this exact displayed dataset, including the active filters."
+    )
+    frame = _filtered_primary_table(result)
+    st.dataframe(frame, use_container_width=True, hide_index=True)
+
+    safe_company = "-".join(result.request.company_name.casefold().split()) or "company"
+    download_columns = st.columns(3)
+    download_columns[0].download_button(
+        "Download displayed table · CSV",
+        data=table_csv_bytes(frame),
+        file_name=f"{safe_company}_products.csv",
+        mime="text/csv",
+        type="primary",
+        use_container_width=True,
+    )
+    download_columns[1].download_button(
+        "Download displayed table · Excel",
+        data=table_excel_bytes(frame),
+        file_name=f"{safe_company}_products.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+    )
+    download_columns[2].download_button(
+        "Download displayed table · JSON",
+        data=table_json_bytes(frame),
+        file_name=f"{safe_company}_products.json",
+        mime="application/json",
+        use_container_width=True,
+    )
+
+
+def _render_result(result: ResearchResult, job: ResearchJob | None = None) -> None:
     st.success(
         f"Completed: {len(result.products)} products, "
         f"{len(result.assets)} evidence assets, and {len(result.configurations)} ranked configurations."
@@ -145,10 +204,8 @@ def _render_result(result: ResearchResult) -> None:
                 "inspect captured URLs and recognition decisions."
             )
         else:
-            _safe_dataframe(
-                [_product_summary(product) for product in result.products],
-                empty_message="No products found.",
-            )
+            _render_primary_table(result)
+            st.markdown("### Product details")
             for index, product in enumerate(result.products):
                 _render_product(product, expanded=index == 0)
 
@@ -242,6 +299,16 @@ def _render_result(result: ResearchResult) -> None:
                 )
 
     with technical_tab:
+        if job is not None:
+            st.write(
+                {
+                    "session_id": job.job_id,
+                    "task_id": job.task_id,
+                    "output_directory": job.output_dir,
+                    "submitted_at": job.submitted_at.isoformat(),
+                    "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+                }
+            )
         if result.warnings:
             st.markdown("**Warnings**")
             for warning in result.warnings:
@@ -254,30 +321,39 @@ def _render_result(result: ResearchResult) -> None:
         with st.expander("Asset acquisition log"):
             _safe_dataframe(result.acquisition_log, empty_message="No acquisition log entries.")
 
-    if result.excel_path and Path(result.excel_path).exists():
+    excel_path = Path(job.excel_path) if job and job.excel_path else Path(result.excel_path or "")
+    if excel_path.is_file():
         st.download_button(
-            "Download complete Excel workbook",
-            data=Path(result.excel_path).read_bytes(),
-            file_name=Path(result.excel_path).name,
+            "Download complete multi-sheet research workbook",
+            data=excel_path.read_bytes(),
+            file_name=excel_path.name,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary",
+            use_container_width=True,
         )
 
 
-def _worker_is_available() -> bool:
+def _broker_is_available() -> bool:
     from .celery_app import celery_app
 
-    return bool(celery_app.control.ping(timeout=2.0))
+    try:
+        with celery_app.connection_for_write() as connection:
+            connection.ensure_connection(max_retries=1)
+        return True
+    except Exception:
+        return False
 
 
-def _submit_job(company: str, website: str, settings: Settings) -> None:
+def _submit_job(
+    company: str,
+    website: str,
+    settings: Settings,
+    store: ResearchJobStore,
+) -> ResearchJob:
     from .tasks import enqueue_research
 
     if not settings.celery_enabled:
         raise RuntimeError("Celery is disabled. Set CELERY_ENABLED=true in .env.")
     if settings.celery_always_eager:
-        # The UI explicitly requests a background job. Override contradictory local eager mode in
-        # this producer process so the task is actually sent to Redis/Celery.
         from .celery_app import celery_app
 
         celery_app.conf.task_always_eager = False
@@ -285,62 +361,218 @@ def _submit_job(company: str, website: str, settings: Settings) -> None:
         raise RuntimeError("OPENAI_API_KEY is missing from .env.")
     if not settings.firecrawl_api_key and settings.search_provider == "firecrawl":
         raise RuntimeError("FIRECRAWL_API_KEY is missing from .env.")
-    if not _worker_is_available():
-        raise RuntimeError(
-            "No Celery worker responded. Start the worker, wait for 'ready', and click Start again."
-        )
+    if not _broker_is_available():
+        raise RuntimeError("Redis/Celery broker is unavailable. Start Redis and retry.")
 
     request = build_research_request(company, website, settings)
-    task = enqueue_research(
-        request,
-        settings_overrides=worker_settings_overrides(settings),
-    )
-    st.session_state["active_task_id"] = task.id
-    st.session_state["active_company"] = request.company_name
-    st.session_state.pop("result_json", None)
+    job_id = uuid4().hex
+    output_dir = build_job_output_dir(settings, request.company_name, job_id)
+    job = store.create(request, job_id=job_id, output_dir=output_dir)
+    try:
+        task = enqueue_research(
+            request,
+            output_path=output_dir / "complete_research.xlsx",
+            settings_overrides=worker_settings_overrides(settings),
+            job_id=job_id,
+        )
+        if task.id != job_id:
+            job = store.update(job_id, task_id=task.id)
+    except Exception as exc:
+        store.mark_failed(job_id, f"The job could not be submitted to Celery: {exc}")
+        raise
+
+    st.session_state["selected_job_id"] = job.job_id
+    st.session_state["job_selector"] = job.job_id
     st.session_state.pop("job_error", None)
+    return job
 
 
-def _poll_active_job(settings: Settings) -> None:
+def _reconcile_celery_state(job: ResearchJob, store: ResearchJobStore) -> ResearchJob:
+    """Repair the durable ledger from Celery if a worker died between its final writes."""
+
     from celery.result import AsyncResult
 
     from .celery_app import celery_app
 
-    task_id = st.session_state.get("active_task_id")
-    if not task_id:
+    task = AsyncResult(job.task_id, app=celery_app)
+    try:
+        state = task.state
+        info = task.info if isinstance(task.info, dict) else {}
+    except Exception:
+        return job
+
+    if job.status == "queued" and state in {"STARTED", "PROGRESS"}:
+        stage = str(info.get("stage") or "initializing")
+        job = store.mark_running(
+            job.job_id,
+            task_id=job.task_id,
+            stage=stage,
+            message=str(info.get("message") or _STAGE_LABELS.get(stage, stage)),
+        )
+    elif job.status in ACTIVE_JOB_STATUSES and task.successful():
+        summary = task.result if isinstance(task.result, dict) else {}
+        run_id = str(summary.get("run_id") or "")
+        if run_id:
+            job = store.mark_completed(
+                job.job_id,
+                run_id=run_id,
+                summary=summary,
+                excel_path=str(summary.get("excel_path") or "") or None,
+                table_csv_path=str(summary.get("table_csv_path") or "") or None,
+                table_json_path=str(summary.get("table_json_path") or "") or None,
+                result_json_path=str(summary.get("result_json_path") or "") or None,
+            )
+    elif job.status in ACTIVE_JOB_STATUSES and task.failed():
+        job = store.mark_failed(job.job_id, str(task.result))
+
+    if job.is_terminal and job.backend_cleared_at is None:
+        try:
+            task.forget()
+            job = store.mark_backend_cleared(job.job_id)
+        except Exception:
+            pass
+    return job
+
+
+def _load_job_result(job: ResearchJob, settings: Settings) -> ResearchResult:
+    if job.run_id:
+        try:
+            return build_repository(settings).load(job.run_id)
+        except (KeyError, OSError, ValueError):
+            pass
+    if job.result_json_path:
+        path = Path(job.result_json_path)
+        if path.is_file():
+            return ResearchResult.model_validate_json(path.read_text(encoding="utf-8"))
+    raise RuntimeError("The session completed, but its persisted research result could not be loaded.")
+
+
+def _history_frame(jobs: list[ResearchJob]) -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    for job in jobs:
+        summary = job.summary
+        rows.append(
+            {
+                "Session": job.job_id[:8],
+                "Company": job.company_name,
+                "Status": job.status.upper(),
+                "Stage": _STAGE_LABELS.get(job.stage, job.stage.replace("_", " ").title()),
+                "Progress": f"{job.progress}%",
+                "Products": summary.get("products", ""),
+                "Submitted (UTC)": job.submitted_at.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _clear_session_view() -> None:
+    st.session_state["selected_job_id"] = None
+    st.session_state["job_selector"] = ""
+
+
+def _render_job_history(store: ResearchJobStore, settings: Settings) -> list[ResearchJob]:
+    jobs = store.list(limit=settings.ui_history_limit)
+    st.markdown("### Research sessions")
+    st.caption(
+        "Each company has an isolated task ID, output directory, progress record, and downloadable "
+        "result. Submitting another company switches the view without overwriting earlier sessions."
+    )
+    if not jobs:
+        st.info("No research sessions have been submitted yet.")
+        return jobs
+
+    st.dataframe(_history_frame(jobs), use_container_width=True, hide_index=True)
+    labels = {
+        job.job_id: (
+            f"{job.company_name} · {job.status.upper()} · "
+            f"{job.submitted_at.strftime('%Y-%m-%d %H:%M UTC')} · {job.job_id[:8]}"
+        )
+        for job in jobs
+    }
+    valid_ids = {job.job_id for job in jobs}
+    if "selected_job_id" not in st.session_state:
+        st.session_state["selected_job_id"] = jobs[0].job_id
+    selected = st.session_state.get("selected_job_id")
+    if selected is not None and selected not in valid_ids:
+        selected = None
+        st.session_state["selected_job_id"] = None
+
+    valid_selector_values = {"", *valid_ids}
+    if st.session_state.get("job_selector") not in valid_selector_values:
+        st.session_state["job_selector"] = selected or ""
+
+    selector_column, clear_column = st.columns([4, 1])
+    selected_job_id = selector_column.selectbox(
+        "Open a session",
+        options=["", *[job.job_id for job in jobs]],
+        format_func=lambda job_id: "No session selected" if not job_id else labels[job_id],
+        key="job_selector",
+    )
+    normalized_selection = selected_job_id or None
+    if normalized_selection != st.session_state.get("selected_job_id"):
+        st.session_state["selected_job_id"] = normalized_selection
+        st.rerun()
+    clear_column.button(
+        "Clear current view",
+        use_container_width=True,
+        on_click=_clear_session_view,
+    )
+    return jobs
+
+
+def _render_selected_job(
+    job: ResearchJob,
+    jobs: list[ResearchJob],
+    store: ResearchJobStore,
+    settings: Settings,
+) -> None:
+    previous_state = (job.status, job.stage, job.progress, job.updated_at)
+    job = _reconcile_celery_state(job, store)
+    current_state = (job.status, job.stage, job.progress, job.updated_at)
+    if current_state != previous_state:
+        st.rerun()
+    st.divider()
+    st.subheader(job.company_name)
+    st.caption(f"{job.official_domain} · session {job.job_id} · task {job.task_id}")
+
+    if job.status in ACTIVE_JOB_STATUSES:
+        label = _STAGE_LABELS.get(job.stage, job.message or job.stage)
+        with st.status(label, expanded=True, state="running"):
+            st.progress(job.progress, text=f"{job.progress}% · {label}")
+            if job.message and job.message != label:
+                st.write(job.message)
+            running_others = [
+                item for item in jobs if item.job_id != job.job_id and item.status == "running"
+            ]
+            if job.status == "queued" and running_others:
+                st.info(
+                    f"Queued behind {len(running_others)} running session(s). A solo worker processes "
+                    "one company at a time; this session will start automatically."
+                )
+            elif job.status == "queued":
+                age_seconds = (datetime.now(timezone.utc) - job.submitted_at).total_seconds()
+                if age_seconds >= settings.ui_queue_warning_seconds:
+                    st.warning(
+                        "The broker accepted this task, but no worker has recorded a start yet. Check the "
+                        "Celery terminal for a 'ready' worker. This is a queued state, not an old result."
+                    )
+            st.caption(f"Output directory: {job.output_dir}")
+        time.sleep(2.0)
+        st.rerun()
+
+    if job.status == "failed":
+        st.error(job.error or "The research session failed without a recorded error message.")
+        st.caption(f"This failure is isolated to session {job.job_id}; previous company results are unchanged.")
         return
 
-    task = AsyncResult(task_id, app=celery_app)
-    state = task.state
-    info = task.info if isinstance(task.info, dict) else {}
-    stage = str(info.get("stage") or ("queued" if state == "PENDING" else state.casefold()))
-    label = _STAGE_LABELS.get(stage, f"Worker state: {state}")
-    progress = _STAGE_PROGRESS.get(stage, 5 if state == "PENDING" else 50)
+    if job.status == "completed":
+        try:
+            _render_result(_load_job_result(job, settings), job)
+        except Exception as exc:
+            st.error(str(exc))
+        return
 
-    with st.status(label, expanded=True, state="running"):
-        st.progress(progress, text=f"{progress}% · {label}")
-        if info.get("current") is not None and info.get("total") is not None:
-            st.write(f"Processed {info['current']} of {info['total']} items")
-        st.caption(f"Background task: {task_id}")
-
-    if task.successful():
-        summary = task.result if isinstance(task.result, dict) else {}
-        run_id = summary.get("run_id")
-        if not run_id:
-            st.session_state["job_error"] = "Worker completed without returning a persisted run ID."
-        else:
-            result = build_repository(settings).load(str(run_id))
-            st.session_state["result_json"] = result.model_dump_json()
-        st.session_state.pop("active_task_id", None)
-        st.rerun()
-
-    if task.failed():
-        st.session_state["job_error"] = str(task.result)
-        st.session_state.pop("active_task_id", None)
-        st.rerun()
-
-    time.sleep(2.0)
-    st.rerun()
+    st.info(f"Session status: {job.status}")
 
 
 def render_app(*, configure_page: bool = True) -> None:
@@ -353,49 +585,56 @@ def render_app(*, configure_page: bool = True) -> None:
         )
 
     settings = Settings()
+    settings.ensure_directories()
+    store = ResearchJobStore.from_settings(settings)
+
     st.title("BRIXTA Mattress Product Intelligence")
     st.caption(
-        "Enter a company and its official website. The background worker discovers products, "
-        "captures pages and images, extracts specifications, and ranks likely mattress constructions."
+        "Run one company after another. Every submission is an isolated Celery session with its own "
+        "status, output directory, result table, and complete Excel workbook."
     )
 
-    with st.form("research_job", clear_on_submit=False):
+    with st.form("research_job", clear_on_submit=True):
         company_column, website_column = st.columns([1, 2])
-        company = company_column.text_input("Company", value="The Sleep Company")
+        company = company_column.text_input("Company", placeholder="Sleepwell")
         website = website_column.text_input(
-            "Official website", value="https://thesleepcompany.in"
+            "Official website",
+            placeholder="https://www.sleepwellproducts.com",
         )
         submitted = st.form_submit_button(
             "Start product research",
             type="primary",
             use_container_width=True,
-            disabled=bool(st.session_state.get("active_task_id")),
         )
 
     st.caption(
         f"Automatic run: up to {settings.ui_max_pages} official pages, "
         f"{settings.ui_max_external_pages} external evidence pages, images/OCR/vision, "
-        "product resolution, configuration ranking, and Excel export."
+        "product resolution, configuration ranking, and isolated exports. You may queue another company "
+        "while one is running."
     )
 
     if submitted:
         try:
-            _submit_job(company, website, settings)
+            _submit_job(company, website, settings, store)
             st.rerun()
         except Exception as exc:
-            st.error(str(exc))
+            st.session_state["job_error"] = str(exc)
 
     if st.session_state.get("job_error"):
         st.error(st.session_state["job_error"])
 
-    if st.session_state.get("active_task_id"):
-        _poll_active_job(settings)
-        return
-
-    if "result_json" in st.session_state:
-        _render_result(ResearchResult.model_validate_json(st.session_state["result_json"]))
+    jobs = _render_job_history(store, settings)
+    selected_job_id = st.session_state.get("selected_job_id")
+    selected_job = next((job for job in jobs if job.job_id == selected_job_id), None)
+    if selected_job is not None:
+        _render_selected_job(selected_job, jobs, store, settings)
+    elif jobs:
+        st.info("Select a research session above to inspect its status or results.")
     else:
-        st.info(
-            "Ready. Click Start product research; the job will run in Celery and results "
-            "will appear here."
-        )
+        st.info("Ready. Submit a company to create the first isolated research session.")
+
+    selected_is_active = selected_job is not None and selected_job.status in ACTIVE_JOB_STATUSES
+    if not selected_is_active and any(job.status in ACTIVE_JOB_STATUSES for job in jobs):
+        time.sleep(2.0)
+        st.rerun()

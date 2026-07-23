@@ -42,6 +42,9 @@ class Settings:
     database_path: Path = field(
         default_factory=lambda: Path(os.getenv("MATTRESS_INTEL_DATABASE_PATH", "data/mattress_intelligence.sqlite3"))
     )
+    job_database_path: Path = field(
+        default_factory=lambda: Path(os.getenv("MATTRESS_INTEL_JOB_DATABASE_PATH", "data/research_jobs.sqlite3"))
+    )
     database_url: str | None = field(default_factory=lambda: os.getenv("DATABASE_URL") or None)
     database_direct_url: str | None = field(default_factory=lambda: os.getenv("DATABASE_DIRECT_URL") or None)
 
@@ -69,6 +72,12 @@ class Settings:
     )
     ui_max_configurations_per_product: int = field(
         default_factory=lambda: _int_env("MATTRESS_INTEL_UI_MAX_CONFIGURATIONS", 8)
+    )
+    ui_history_limit: int = field(
+        default_factory=lambda: _int_env("MATTRESS_INTEL_UI_HISTORY_LIMIT", 50)
+    )
+    ui_queue_warning_seconds: int = field(
+        default_factory=lambda: _int_env("MATTRESS_INTEL_UI_QUEUE_WARNING_SECONDS", 90)
     )
 
     # GPT is limited to source/document/image recognition and explicit transcription.
@@ -175,10 +184,13 @@ class Settings:
     celery_wait_timeout_seconds: int = field(
         default_factory=lambda: _int_env("CELERY_WAIT_TIMEOUT_SECONDS", 7200)
     )
+    celery_result_expires_seconds: int = field(
+        default_factory=lambda: _int_env("CELERY_RESULT_EXPIRES_SECONDS", 3600)
+    )
 
     user_agent: str = field(
         default_factory=lambda: os.getenv(
-            "MATTRESS_INTEL_USER_AGENT", "BRIXTA-Mattress-Intelligence/1.3 (+evidence-research)"
+            "MATTRESS_INTEL_USER_AGENT", "BRIXTA-Mattress-Intelligence/1.4 (+evidence-research)"
         )
     )
     request_timeout_seconds: float = field(
@@ -206,3 +218,4 @@ class Settings:
         for directory in (self.data_dir, self.output_dir, self.artifact_dir):
             directory.mkdir(parents=True, exist_ok=True)
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        self.job_database_path.parent.mkdir(parents=True, exist_ok=True)

@@ -27,4 +27,7 @@ celery_app.conf.update(
     task_soft_time_limit=max(60, settings.celery_task_time_limit_seconds - 60),
     task_always_eager=settings.celery_always_eager,
     task_store_eager_result=True,
+    result_expires=settings.celery_result_expires_seconds,
+    task_send_sent_event=True,
+    worker_send_task_events=True,
 )

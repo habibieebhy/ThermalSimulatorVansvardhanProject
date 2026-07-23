@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from io import BytesIO
 from pathlib import Path
 from typing import Any, cast
 
@@ -11,6 +12,79 @@ from xlsxwriter.workbook import Workbook
 from xlsxwriter.worksheet import Worksheet
 
 from .models import ResearchResult
+
+
+def primary_table_frame(result: ResearchResult) -> pd.DataFrame:
+    """Return the exact product table used by the Streamlit UI and quick exports."""
+
+    rows = [
+        {
+            "Product": product.name,
+            "Family": product.family,
+            "Firmness": product.firmness,
+            "Thickness (mm)": product.total_thickness_mm,
+            "Price": product.price,
+            "Currency": product.currency,
+            "Layers": len(product.layers),
+            "Variants": len(product.variants),
+            "Confidence": round(product.extraction_confidence, 3),
+            "URL": product.canonical_url,
+        }
+        for product in result.products
+    ]
+    return pd.DataFrame(
+        rows,
+        columns=[
+            "Product",
+            "Family",
+            "Firmness",
+            "Thickness (mm)",
+            "Price",
+            "Currency",
+            "Layers",
+            "Variants",
+            "Confidence",
+            "URL",
+        ],
+    )
+
+
+def table_csv_bytes(frame: pd.DataFrame) -> bytes:
+    return frame.to_csv(index=False).encode("utf-8-sig")
+
+
+def table_json_bytes(frame: pd.DataFrame) -> bytes:
+    return frame.to_json(orient="records", force_ascii=False, indent=2).encode("utf-8")
+
+
+def table_excel_bytes(frame: pd.DataFrame) -> bytes:
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+        frame.to_excel(writer, sheet_name="Displayed Products", index=False)
+        worksheet = cast(Worksheet, writer.sheets["Displayed Products"])
+        worksheet.freeze_panes(1, 0)
+        for index, column in enumerate(frame.columns):
+            lengths = [len(str(column)), *(len(str(value)) for value in frame[column].head(200))]
+            worksheet.set_column(index, index, min(70, max(12, max(lengths, default=12) + 2)))
+    return buffer.getvalue()
+
+
+def export_primary_artifacts(result: ResearchResult, output_dir: Path) -> dict[str, str]:
+    """Persist the UI's primary table plus a complete machine-readable result snapshot."""
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    frame = primary_table_frame(result)
+    csv_path = output_dir / "displayed_products.csv"
+    json_path = output_dir / "displayed_products.json"
+    result_path = output_dir / "research_result.json"
+    csv_path.write_bytes(table_csv_bytes(frame))
+    json_path.write_bytes(table_json_bytes(frame))
+    result_path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
+    return {
+        "table_csv_path": str(csv_path),
+        "table_json_path": str(json_path),
+        "result_json_path": str(result_path),
+    }
 
 
 def _flat(value: Any) -> Any:

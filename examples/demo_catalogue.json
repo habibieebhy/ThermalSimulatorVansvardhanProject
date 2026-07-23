@@ -1,0 +1,134 @@
+{
+  "products": [
+    {
+      "brand": "Sleepwell Demo",
+      "name": "Nexa Memory Support",
+      "family": "Nexa",
+      "canonical_url": "https://example.invalid/sleepwell/nexa-memory-support",
+      "description": "Medium-firm mattress with memory foam comfort and HR foam support.",
+      "firmness": "Medium Firm",
+      "total_thickness_mm": 200,
+      "product_weight_kg": 19.0,
+      "price": 24999,
+      "currency": "INR",
+      "layers": [
+        {
+          "position": 1,
+          "marketing_name": "Memory foam",
+          "normalized_material": "memory_foam",
+          "thickness_mm": 50,
+          "thickness_status": "observed",
+          "density_status": "unknown"
+        },
+        {
+          "position": 2,
+          "marketing_name": "HR support foam",
+          "normalized_material": "hr_foam",
+          "thickness_mm": 150,
+          "thickness_status": "observed",
+          "density_status": "unknown"
+        }
+      ],
+      "variants": [
+        {
+          "size_name": "Queen",
+          "width_mm": 1520,
+          "length_mm": 1980,
+          "thickness_mm": 200,
+          "weight_kg": 19.0,
+          "price": 24999,
+          "currency": "INR"
+        }
+      ],
+      "extraction_confidence": 0.95
+    },
+    {
+      "brand": "Sleepwell Demo",
+      "name": "Latex Responsive",
+      "family": "Latex",
+      "canonical_url": "https://example.invalid/sleepwell/latex-responsive",
+      "description": "Responsive natural latex comfort over HR foam support.",
+      "firmness": "Medium",
+      "total_thickness_mm": 180,
+      "product_weight_kg": 23.0,
+      "price": 32999,
+      "currency": "INR",
+      "layers": [
+        {
+          "position": 1,
+          "marketing_name": "Natural latex",
+          "normalized_material": "natural_latex",
+          "thickness_mm": 60,
+          "density_kg_m3": 75,
+          "thickness_status": "observed",
+          "density_status": "observed"
+        },
+        {
+          "position": 2,
+          "marketing_name": "HR support foam",
+          "normalized_material": "hr_foam",
+          "thickness_mm": 120,
+          "density_kg_m3": 40,
+          "thickness_status": "observed",
+          "density_status": "observed"
+        }
+      ],
+      "variants": [
+        {
+          "size_name": "Queen",
+          "width_mm": 1520,
+          "length_mm": 1980,
+          "thickness_mm": 180,
+          "weight_kg": 23.0,
+          "price": 32999,
+          "currency": "INR"
+        }
+      ],
+      "extraction_confidence": 0.98
+    },
+    {
+      "brand": "Sleepwell Demo",
+      "name": "Ortho Rebonded",
+      "family": "Ortho",
+      "canonical_url": "https://example.invalid/sleepwell/ortho-rebonded",
+      "description": "Firm quilt foam surface over a rebonded foam core.",
+      "firmness": "Firm",
+      "total_thickness_mm": 150,
+      "product_weight_kg": 28.0,
+      "price": 18999,
+      "currency": "INR",
+      "layers": [
+        {
+          "position": 1,
+          "marketing_name": "Quilt foam",
+          "normalized_material": "quilt_foam",
+          "thickness_mm": 20,
+          "density_kg_m3": 22,
+          "thickness_status": "observed",
+          "density_status": "observed"
+        },
+        {
+          "position": 2,
+          "marketing_name": "Rebonded core",
+          "normalized_material": "rebonded_foam",
+          "thickness_mm": 130,
+          "density_kg_m3": 90,
+          "thickness_status": "observed",
+          "density_status": "observed"
+        }
+      ],
+      "variants": [
+        {
+          "size_name": "Queen",
+          "width_mm": 1520,
+          "length_mm": 1980,
+          "thickness_mm": 150,
+          "weight_kg": 28.0,
+          "price": 18999,
+          "currency": "INR"
+        }
+      ],
+      "extraction_confidence": 0.98
+    }
+  ]
+}

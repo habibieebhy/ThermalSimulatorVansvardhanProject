@@ -42,6 +42,20 @@ from .settings import Settings
 from .similarity import ProductSimilarityIndex
 from .storage import build_repository
 
+def _looks_like_firecrawl_quota_error(value: object) -> bool:
+    text = str(value).casefold()
+    return "firecrawl" in text and any(
+        marker in text
+        for marker in (
+            "quota",
+            "credit",
+            "insufficient balance",
+            "payment required",
+            "http 402",
+            "plan limit",
+        )
+    )
+
 
 class MattressIntelligencePipeline:
     """LLMs transcribe explicit evidence; algorithms alone produce inference."""
@@ -179,6 +193,26 @@ class MattressIntelligencePipeline:
                         )
         finally:
             fetcher.close()
+
+        discovery_entries = list(getattr(self.search_provider, "discovery_log", []) or [])
+        provider_errors = [
+            *report.failed_urls.values(),
+            *(item.get("note") or item.get("reason") or "" for item in discovery_entries),
+        ]
+        firecrawl_quota_errors = [
+            str(item) for item in provider_errors if _looks_like_firecrawl_quota_error(item)
+        ]
+        if firecrawl_quota_errors and not report.documents:
+            raise RuntimeError(
+                "Firecrawl quota or credits appear to be exhausted and no pages could be captured. "
+                "Recharge Firecrawl and retry this company. "
+                f"Provider detail: {firecrawl_quota_errors[0]}"
+            )
+        if firecrawl_quota_errors:
+            warnings.append(
+                "Firecrawl reported a quota/credit problem during this run. Some pages were captured "
+                "through fallback acquisition, so coverage may be incomplete."
+            )
 
         progress("extracting", current=0, total=len(report.documents))
         extractor = ProductExtractor(

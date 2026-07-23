@@ -29,6 +29,7 @@ data/*
 examples/*
 !examples/.gitkeep
 !examples/README.md
+!examples/demo_catalogue.json
 
 # Generated outputs
 outputs/*
