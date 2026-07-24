@@ -5,13 +5,14 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from .firecrawl import FirecrawlClient, FirecrawlError
 from .jina import JinaError, JinaSearchClient
 from .llm import LLMProvider, discovery_queries
+from .network import RETRYABLE_TRANSPORT_ERRORS, http_error_detail
 
 
 class SearchError(RuntimeError):
@@ -282,12 +283,12 @@ class TavilySearchProvider:
                 with urlopen(request, timeout=self.timeout_seconds) as response:
                     return json.loads(response.read().decode("utf-8"))
             except HTTPError as exc:
-                detail = exc.read().decode("utf-8", errors="replace")[:1_000]
+                detail = http_error_detail(exc, limit=1_000)
                 if (exc.code == 429 or 500 <= exc.code < 600) and attempt < self.max_retries:
                     time.sleep(min(2**attempt, 20.0))
                     continue
                 raise SearchError(f"Tavily HTTP {exc.code}: {detail}") from exc
-            except (URLError, TimeoutError, json.JSONDecodeError) as exc:
+            except RETRYABLE_TRANSPORT_ERRORS + (json.JSONDecodeError,) as exc:
                 if attempt < self.max_retries:
                     time.sleep(min(2**attempt, 20.0))
                     continue
@@ -350,9 +351,9 @@ class TavilySearchProvider:
             with urlopen(request, timeout=self.timeout_seconds) as response:
                 return json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")[:1_000]
+            detail = http_error_detail(exc, limit=1_000)
             raise SearchError(f"Tavily usage check HTTP {exc.code}: {detail}") from exc
-        except (URLError, TimeoutError, json.JSONDecodeError) as exc:
+        except RETRYABLE_TRANSPORT_ERRORS + (json.JSONDecodeError,) as exc:
             raise SearchError(f"Tavily usage check failed: {exc}") from exc
 
 

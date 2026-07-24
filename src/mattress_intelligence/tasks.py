@@ -1,4 +1,4 @@
-"""Celery tasks with durable job state and compact Redis result payloads."""
+"""Celery tasks with durable state, execution leases, and compact result payloads."""
 
 from __future__ import annotations
 
@@ -8,10 +8,11 @@ from typing import Any, cast
 from uuid import uuid4
 
 from celery import Task
+from celery.exceptions import Ignore
 
 from .celery_app import celery_app
 from .exporter import export_primary_artifacts
-from .jobs import ResearchJobStore
+from .jobs import ResearchJob, ResearchJobStore
 from .models import CompanyResearchRequest
 from .pipeline import MattressIntelligencePipeline
 from .settings import Settings
@@ -30,7 +31,11 @@ _STAGE_MESSAGES = {
     "discovering": "Discovering official, catalogue, and external evidence URLs",
     "crawling": "Capturing official pages, catalogues, and product pages",
     "extracting": "Extracting products, prices, variants, and explicit specifications",
-    "assets": "Downloading images and catalogue pages; running OCR and vision",
+    "assets": "Downloading images and catalogue pages; running OCR and forensic vision",
+    "visual_followup": "Searching and capturing diagram-matched brochures, archives, patents, and teardowns",
+    "material_decoding": "Reading proprietary material names and preparing evidence searches",
+    "material_evidence": "Crawling technical documents for material identity and density evidence",
+    "material_adjudication": "Decoding trademarked materials and grading density evidence",
     "resolving": "Resolving duplicate product records and evidence",
     "analyzing": "Generating evidence-ranked construction configurations",
     "exporting": "Saving the run and downloadable artifacts",
@@ -46,12 +51,29 @@ def _summary(result: Any) -> dict[str, object]:
         "variants": sum(len(product.variants) for product in result.products),
         "sources": len(result.sources),
         "assets": len(result.assets),
+        "trademark_materials": len(result.trademark_materials),
+        "materials_with_density_evidence": sum(
+            1 for item in result.trademark_materials if str(item.density_status) != "unknown"
+        ),
         "observations": len(result.observations),
         "configurations": len(result.configurations),
         "coverage_percent": result.coverage.estimated_coverage_percent,
         "excel_path": result.excel_path,
         "warnings": len(result.warnings),
     }
+
+
+def _completed_job_payload(job: ResearchJob) -> dict[str, object]:
+    payload: dict[str, object] = dict(job.summary)
+    payload.setdefault("run_id", job.run_id or "")
+    payload.setdefault("company", job.company_name)
+    payload.setdefault("excel_path", job.excel_path)
+    payload.setdefault("table_csv_path", job.table_csv_path)
+    payload.setdefault("table_json_path", job.table_json_path)
+    payload.setdefault("result_json_path", job.result_json_path)
+    payload["job_id"] = job.job_id
+    payload["duplicate_delivery_ignored"] = True
+    return payload
 
 
 def _settings_with_overrides(overrides: dict[str, Any] | None) -> Settings:
@@ -81,6 +103,17 @@ def _friendly_error(exc: BaseException) -> str:
             "overwriting previous company results. Recharge Firecrawl and retry this session. "
             f"Provider detail: {detail}"
         )
+    if (
+        "incompleteread" in lowered
+        or ("bytes read" in lowered and "more expected" in lowered)
+        or "remote end closed connection" in lowered
+    ):
+        return (
+            "An upstream HTTP service closed the response before sending the complete body. "
+            "The session was stopped cleanly and previous company results remain unchanged. "
+            "Retry the session; repeated failures should be investigated using the Celery traceback. "
+            f"Transport detail: {detail}"
+        )
     if "soft time limit" in lowered or "timelimit" in lowered:
         return f"The worker time limit was reached. Provider detail: {detail}"
     if "connection refused" in lowered and "redis" in lowered:
@@ -92,15 +125,12 @@ def _job_store(settings: Settings, job_id: str | None) -> ResearchJobStore | Non
     return ResearchJobStore.from_settings(settings) if job_id else None
 
 
-def _safe_job_update(callback: Any, *args: object, **kwargs: object) -> None:
-    try:
-        callback(*args, **kwargs)
-    except Exception:
-        # Celery task execution must not be lost merely because the auxiliary job ledger is unavailable.
-        return
-
-
-def _progress_updater(task: Any, store: ResearchJobStore | None, job_id: str | None):
+def _progress_updater(
+    task: Any,
+    store: ResearchJobStore | None,
+    job_id: str | None,
+    execution_token: str | None,
+):
     def update(stage: str, **metadata: object) -> None:
         default_message = _STAGE_MESSAGES.get(stage, stage.replace("_", " ").title())
         message = str(metadata.get("message") or default_message)
@@ -110,7 +140,12 @@ def _progress_updater(task: Any, store: ResearchJobStore | None, job_id: str | N
             message = f"{message} ({current}/{total})"
         task.update_state(state="PROGRESS", meta={"stage": stage, "message": message, **metadata})
         if store is not None and job_id is not None:
-            _safe_job_update(store.mark_progress, job_id, stage, message=message)
+            store.mark_progress(
+                job_id,
+                stage,
+                message=message,
+                execution_token=execution_token,
+            )
 
     return update
 
@@ -127,15 +162,27 @@ def _run_pipeline_task(
     settings = _settings_with_overrides(settings_overrides)
     store = _job_store(settings, job_id)
     task_id = str(task.request.id or job_id or "")
+    execution_token: str | None = None
 
     if store is not None and job_id is not None:
-        _safe_job_update(
-            store.mark_running,
+        # Repair any ledger damaged by a pre-v1.6.1 duplicate before deciding whether to run.
+        existing = store.recover_completed_from_artifacts(job_id)
+        if existing.status == "completed":
+            return _completed_job_payload(existing)
+
+        execution_token = uuid4().hex
+        claimed, disposition = store.claim_for_execution(
             job_id,
             task_id=task_id,
-            stage="initializing",
+            execution_token=execution_token,
+            stale_after_seconds=settings.celery_job_lease_stale_seconds,
             message=_STAGE_MESSAGES["initializing"],
         )
+        if disposition == "completed":
+            return _completed_job_payload(claimed)
+        if disposition in {"already_running", "terminal"}:
+            # Acknowledge this delivery without changing the shared task backend state.
+            raise Ignore()
 
     task.update_state(
         state="PROGRESS",
@@ -145,7 +192,7 @@ def _run_pipeline_task(
     try:
         pipeline = MattressIntelligencePipeline(settings)
         request = CompanyResearchRequest.model_validate(request_payload)
-        callback = _progress_updater(task, store, job_id)
+        callback = _progress_updater(task, store, job_id, execution_token)
         destination = Path(output_path) if output_path else None
         if mode == "collect":
             result = pipeline.collect(request, destination, progress_callback=callback)
@@ -159,8 +206,7 @@ def _run_pipeline_task(
         summary["job_id"] = job_id or task_id
 
         if store is not None and job_id is not None:
-            _safe_job_update(
-                store.mark_completed,
+            completed = store.mark_completed(
                 job_id,
                 run_id=result.run_id,
                 summary=summary,
@@ -168,12 +214,19 @@ def _run_pipeline_task(
                 table_csv_path=artifacts["table_csv_path"],
                 table_json_path=artifacts["table_json_path"],
                 result_json_path=artifacts["result_json_path"],
+                execution_token=execution_token,
             )
+            if completed.status == "completed":
+                return _completed_job_payload(completed) | {
+                    "duplicate_delivery_ignored": False,
+                }
         return summary
+    except Ignore:
+        raise
     except Exception as exc:
         error = _friendly_error(exc)
         if store is not None and job_id is not None:
-            _safe_job_update(store.mark_failed, job_id, error)
+            store.mark_failed(job_id, error, execution_token=execution_token)
         raise RuntimeError(error) from exc
 
 

@@ -149,22 +149,53 @@ class ConfigurationGenerator:
             )
 
         if not thickness_solutions:
-            warnings.append("No exact grid solution; proportional layer thicknesses were used.")
-            known_total = sum(layer.thickness_mm or 0.0 for layer in blueprint)
-            if known_total > 0:
-                proportional = tuple(
-                    max(1, int(round(total_mm * (layer.thickness_mm or 1.0) / known_total)))
-                    for layer in blueprint
+            warnings.append(
+                "No exact grid solution; positive proportional layer thicknesses were used."
+            )
+
+            layer_count = len(blueprint)
+            if total_mm < layer_count:
+                warnings.append(
+                    f"Total thickness {total_mm} mm cannot provide at least 1 mm "
+                    f"for each of {layer_count} layers; 200 mm research baseline used."
                 )
-            else:
-                share = total_mm // len(blueprint)
-                proportional = tuple(
-                    share if index < len(blueprint) - 1 else total_mm - share * (len(blueprint) - 1)
-                    for index in range(len(blueprint))
+                total_mm = max(200, layer_count)
+
+            # Reserve 1 mm for every layer first. Then distribute the remaining
+            # thickness proportionally. Known thicknesses are used as weights;
+            # undisclosed or invalid values receive a neutral 1.0 weight.
+            weights = [
+                max(float(layer.thickness_mm or 1.0), 1.0)
+                for layer in blueprint
+            ]
+            weight_total = sum(weights)
+            remaining_mm = total_mm - layer_count
+            raw_extras = [
+                remaining_mm * weight / weight_total
+                for weight in weights
+            ]
+            adjusted = [
+                1 + math.floor(extra)
+                for extra in raw_extras
+            ]
+
+            # Largest-remainder allocation guarantees integer values that are
+            # all positive and sum exactly to the required mattress thickness.
+            remainder = total_mm - sum(adjusted)
+            allocation_order = sorted(
+                range(layer_count),
+                key=lambda index: raw_extras[index] - math.floor(raw_extras[index]),
+                reverse=True,
+            )
+            for offset in range(remainder):
+                adjusted[allocation_order[offset % layer_count]] += 1
+
+            if any(value <= 0 for value in adjusted) or sum(adjusted) != total_mm:
+                raise RuntimeError(
+                    "Unable to allocate positive layer thicknesses that match "
+                    f"the required total of {total_mm} mm."
                 )
-            difference = total_mm - sum(proportional)
-            adjusted = list(proportional)
-            adjusted[-1] += difference
+
             thickness_solutions = [tuple(adjusted)]
 
         density_options: list[tuple[int, ...]] = []
@@ -245,4 +276,3 @@ class ConfigurationGenerator:
             backend=backend,
             warnings=warnings,
         )
-

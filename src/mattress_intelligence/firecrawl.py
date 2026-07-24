@@ -6,8 +6,10 @@ import json
 import time
 from dataclasses import dataclass
 from typing import Any
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+
+from .network import RETRYABLE_TRANSPORT_ERRORS, http_error_detail
 
 
 class FirecrawlError(RuntimeError):
@@ -97,10 +99,7 @@ class FirecrawlClient:
                     return value
 
             except HTTPError as exc:
-                detail = exc.read().decode(
-                    "utf-8",
-                    errors="replace",
-                )[:1_500]
+                detail = http_error_detail(exc, limit=1_500)
 
                 if (
                     exc.code == 429
@@ -113,11 +112,7 @@ class FirecrawlClient:
                     f"Firecrawl HTTP {exc.code}: {detail}"
                 ) from exc
 
-            except (
-                URLError,
-                TimeoutError,
-                json.JSONDecodeError,
-            ) as exc:
+            except RETRYABLE_TRANSPORT_ERRORS + (json.JSONDecodeError,) as exc:
                 if attempt < self.max_retries:
                     time.sleep(min(2**attempt, 20.0))
                     continue

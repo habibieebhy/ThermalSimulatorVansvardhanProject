@@ -10,10 +10,10 @@ from contextlib import closing
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
-from .models import CompanyResearchRequest
+from .models import CompanyResearchRequest, ResearchResult
 from .settings import Settings
 
 
@@ -26,9 +26,13 @@ _STAGE_PROGRESS = {
     "discovering": 15,
     "crawling": 35,
     "extracting": 58,
-    "assets": 72,
-    "resolving": 82,
-    "analyzing": 90,
+    "assets": 70,
+    "visual_followup": 76,
+    "material_decoding": 81,
+    "material_evidence": 84,
+    "material_adjudication": 88,
+    "resolving": 89,
+    "analyzing": 92,
     "exporting": 97,
     "completed": 100,
     "failed": 100,
@@ -60,7 +64,10 @@ CREATE TABLE IF NOT EXISTS research_jobs (
     result_json_path TEXT,
     error TEXT,
     summary_json TEXT,
-    backend_cleared_at TEXT
+    backend_cleared_at TEXT,
+    execution_token TEXT,
+    heartbeat_at TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS research_jobs_status_idx
@@ -68,6 +75,20 @@ CREATE INDEX IF NOT EXISTS research_jobs_status_idx
 CREATE INDEX IF NOT EXISTS research_jobs_company_idx
     ON research_jobs(company_name, submitted_at DESC);
 """
+
+_REQUIRED_COLUMNS: dict[str, str] = {
+    "execution_token": "TEXT",
+    "heartbeat_at": "TEXT",
+    "attempt_count": "INTEGER NOT NULL DEFAULT 0",
+}
+
+
+ClaimDisposition = Literal[
+    "claimed",
+    "already_running",
+    "completed",
+    "terminal",
+]
 
 
 def utc_now() -> datetime:
@@ -81,7 +102,8 @@ def _iso(value: datetime | None) -> str | None:
 def _parse_datetime(value: str | None) -> datetime | None:
     if not value:
         return None
-    return datetime.fromisoformat(value)
+    parsed = datetime.fromisoformat(value)
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
 
 
 def _slug(value: str) -> str:
@@ -92,6 +114,26 @@ def _slug(value: str) -> str:
 def build_job_output_dir(settings: Settings, company_name: str, job_id: str) -> Path:
     stamp = utc_now().strftime("%Y%m%d_%H%M%S")
     return settings.output_dir / "sessions" / f"{stamp}_{_slug(company_name)}_{job_id[:8]}"
+
+
+def _result_summary(result: ResearchResult) -> dict[str, object]:
+    return {
+        "run_id": result.run_id,
+        "company": result.request.company_name,
+        "products": len(result.products),
+        "variants": sum(len(product.variants) for product in result.products),
+        "sources": len(result.sources),
+        "assets": len(result.assets),
+        "trademark_materials": len(result.trademark_materials),
+        "materials_with_density_evidence": sum(
+            1 for item in result.trademark_materials if str(item.density_status) != "unknown"
+        ),
+        "observations": len(result.observations),
+        "configurations": len(result.configurations),
+        "coverage_percent": result.coverage.estimated_coverage_percent,
+        "excel_path": result.excel_path,
+        "warnings": len(result.warnings),
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +160,9 @@ class ResearchJob:
     error: str | None
     summary_json: str | None
     backend_cleared_at: datetime | None
+    execution_token: str | None
+    heartbeat_at: datetime | None
+    attempt_count: int
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "ResearchJob":
@@ -152,6 +197,11 @@ class ResearchJob:
                 str(row["summary_json"]) if row["summary_json"] is not None else None
             ),
             backend_cleared_at=_parse_datetime(row["backend_cleared_at"]),
+            execution_token=(
+                str(row["execution_token"]) if row["execution_token"] is not None else None
+            ),
+            heartbeat_at=_parse_datetime(row["heartbeat_at"]),
+            attempt_count=int(row["attempt_count"] or 0),
         )
 
     @property
@@ -177,16 +227,18 @@ class ResearchJob:
             "updated_at",
             "completed_at",
             "backend_cleared_at",
+            "heartbeat_at",
         ):
             payload[key] = _iso(payload[key])
         payload["summary"] = self.summary
         payload.pop("summary_json", None)
         payload.pop("request_json", None)
+        payload.pop("execution_token", None)
         return payload
 
 
 class ResearchJobStore:
-    """Small SQLite job ledger that removes Celery-result-backend ambiguity."""
+    """SQLite job ledger with immutable terminal state and duplicate-execution leases."""
 
     _UPDATABLE_COLUMNS = frozenset(
         {
@@ -205,6 +257,9 @@ class ResearchJobStore:
             "error",
             "summary_json",
             "backend_cleared_at",
+            "execution_token",
+            "heartbeat_at",
+            "attempt_count",
         }
     )
 
@@ -213,6 +268,20 @@ class ResearchJobStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self.connect()) as connection:
             connection.executescript(_SCHEMA)
+            self._migrate_schema(connection)
+            connection.commit()
+
+    @staticmethod
+    def _migrate_schema(connection: sqlite3.Connection) -> None:
+        existing = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(research_jobs)").fetchall()
+        }
+        for column, declaration in _REQUIRED_COLUMNS.items():
+            if column not in existing:
+                connection.execute(
+                    f"ALTER TABLE research_jobs ADD COLUMN {column} {declaration}"
+                )
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "ResearchJobStore":
@@ -308,6 +377,76 @@ class ResearchJobStore:
             connection.commit()
         return self.get(job_id)
 
+    def claim_for_execution(
+        self,
+        job_id: str,
+        *,
+        task_id: str,
+        execution_token: str,
+        stale_after_seconds: int,
+        message: str = "Initializing services and storage",
+    ) -> tuple[ResearchJob, ClaimDisposition]:
+        """Atomically claim one delivery while rejecting live duplicates.
+
+        A stale lease may be reclaimed after a worker crash. A completed job is never
+        reopened, and a concurrent redelivery cannot acquire the same job.
+        """
+
+        now = utc_now()
+        with closing(self.connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM research_jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
+            if row is None:
+                connection.rollback()
+                raise KeyError(f"Unknown job_id: {job_id}")
+            current = ResearchJob.from_row(row)
+
+            if current.status == "completed":
+                connection.commit()
+                return current, "completed"
+            if current.status in {"failed", "cancelled"}:
+                connection.commit()
+                return current, "terminal"
+
+            lease_time = current.heartbeat_at or current.updated_at or current.started_at
+            lease_is_stale = (
+                current.status == "running"
+                and current.execution_token is not None
+                and lease_time is not None
+                and (now - lease_time).total_seconds() >= max(60, stale_after_seconds)
+            )
+            may_claim = (
+                current.status == "queued"
+                or current.execution_token is None
+                or lease_is_stale
+            )
+            if not may_claim:
+                connection.commit()
+                return current, "already_running"
+
+            connection.execute(
+                """UPDATE research_jobs
+                SET task_id = ?, status = 'running', stage = 'initializing', progress = ?,
+                    message = ?, started_at = COALESCE(started_at, ?), updated_at = ?,
+                    error = NULL, execution_token = ?, heartbeat_at = ?,
+                    attempt_count = COALESCE(attempt_count, 0) + 1
+                WHERE job_id = ?""",
+                (
+                    task_id,
+                    _STAGE_PROGRESS["initializing"],
+                    message,
+                    now.isoformat(),
+                    now.isoformat(),
+                    execution_token,
+                    now.isoformat(),
+                    job_id,
+                ),
+            )
+            connection.commit()
+        return self.get(job_id), "claimed"
+
     def mark_running(
         self,
         job_id: str,
@@ -316,16 +455,29 @@ class ResearchJobStore:
         stage: str = "initializing",
         message: str | None = None,
     ) -> ResearchJob:
-        return self.update(
-            job_id,
-            task_id=task_id,
-            status="running",
-            stage=stage,
-            progress=_STAGE_PROGRESS.get(stage, 5),
-            message=message or "Worker started",
-            started_at=utc_now(),
-            error=None,
-        )
+        """Reflect Celery STARTED state without reopening a terminal job."""
+
+        now = utc_now().isoformat()
+        with closing(self.connect()) as connection:
+            connection.execute(
+                """UPDATE research_jobs
+                SET task_id = ?, status = 'running', stage = ?, progress = ?, message = ?,
+                    started_at = COALESCE(started_at, ?), updated_at = ?, error = NULL,
+                    heartbeat_at = COALESCE(heartbeat_at, ?)
+                WHERE job_id = ? AND status IN ('queued', 'running')""",
+                (
+                    task_id,
+                    stage,
+                    _STAGE_PROGRESS.get(stage, 5),
+                    message or "Worker started",
+                    now,
+                    now,
+                    now,
+                    job_id,
+                ),
+            )
+            connection.commit()
+        return self.get(job_id)
 
     def mark_progress(
         self,
@@ -334,14 +486,35 @@ class ResearchJobStore:
         *,
         message: str | None = None,
         progress: int | None = None,
+        execution_token: str | None = None,
     ) -> ResearchJob:
-        return self.update(
-            job_id,
-            status="running",
-            stage=stage,
-            progress=max(0, min(100, progress if progress is not None else _STAGE_PROGRESS.get(stage, 50))),
-            message=message,
+        resolved_progress = max(
+            0,
+            min(100, progress if progress is not None else _STAGE_PROGRESS.get(stage, 50)),
         )
+        now = utc_now().isoformat()
+        token_clause = "" if execution_token is None else " AND execution_token = ?"
+        parameters: list[object] = [
+            stage,
+            resolved_progress,
+            message,
+            now,
+            now,
+            job_id,
+        ]
+        if execution_token is not None:
+            parameters.append(execution_token)
+        with closing(self.connect()) as connection:
+            connection.execute(
+                """UPDATE research_jobs
+                SET status = 'running', stage = ?, progress = ?, message = ?,
+                    updated_at = ?, heartbeat_at = ?
+                WHERE job_id = ? AND status IN ('queued', 'running')"""
+                + token_clause,
+                parameters,
+            )
+            connection.commit()
+        return self.get(job_id)
 
     def mark_completed(
         self,
@@ -353,33 +526,131 @@ class ResearchJobStore:
         table_csv_path: str | None,
         table_json_path: str | None,
         result_json_path: str | None,
+        execution_token: str | None = None,
     ) -> ResearchJob:
-        return self.update(
+        now = utc_now().isoformat()
+        token_clause = "" if execution_token is None else " AND execution_token = ?"
+        parameters: list[object] = [
+            now,
+            now,
+            run_id,
+            excel_path,
+            table_csv_path,
+            table_json_path,
+            result_json_path,
+            json.dumps(summary, separators=(",", ":"), default=str),
             job_id,
-            status="completed",
-            stage="completed",
-            progress=100,
-            message="Research complete",
-            completed_at=utc_now(),
-            run_id=run_id,
-            excel_path=excel_path,
-            table_csv_path=table_csv_path,
-            table_json_path=table_json_path,
-            result_json_path=result_json_path,
-            error=None,
-            summary_json=summary,
-        )
+        ]
+        if execution_token is not None:
+            parameters.append(execution_token)
+        with closing(self.connect()) as connection:
+            connection.execute(
+                """UPDATE research_jobs
+                SET status = 'completed', stage = 'completed', progress = 100,
+                    message = 'Research complete', completed_at = ?, updated_at = ?,
+                    run_id = ?, excel_path = ?, table_csv_path = ?, table_json_path = ?,
+                    result_json_path = ?, error = NULL, summary_json = ?,
+                    execution_token = NULL, heartbeat_at = NULL
+                WHERE job_id = ? AND status IN ('queued', 'running')"""
+                + token_clause,
+                parameters,
+            )
+            connection.commit()
+        return self.get(job_id)
 
-    def mark_failed(self, job_id: str, error: str) -> ResearchJob:
-        return self.update(
-            job_id,
-            status="failed",
-            stage="failed",
-            progress=100,
-            message="Research failed",
-            completed_at=utc_now(),
-            error=error,
-        )
+    def mark_failed(
+        self,
+        job_id: str,
+        error: str,
+        *,
+        execution_token: str | None = None,
+    ) -> ResearchJob:
+        now = utc_now().isoformat()
+        token_clause = "" if execution_token is None else " AND execution_token = ?"
+        parameters: list[object] = [now, now, error, job_id]
+        if execution_token is not None:
+            parameters.append(execution_token)
+        with closing(self.connect()) as connection:
+            connection.execute(
+                """UPDATE research_jobs
+                SET status = 'failed', stage = 'failed', progress = 100,
+                    message = 'Research failed', completed_at = ?, updated_at = ?, error = ?,
+                    execution_token = NULL, heartbeat_at = NULL
+                WHERE job_id = ? AND status IN ('queued', 'running')"""
+                + token_clause,
+                parameters,
+            )
+            connection.commit()
+        return self.get(job_id)
+
+    def recover_completed_from_artifacts(self, job_id: str) -> ResearchJob:
+        """Restore a completed UI session from its validated durable result JSON.
+
+        This repairs ledgers already damaged by an older duplicate delivery. It does not
+        infer completion from an Excel file alone; the complete Pydantic result must parse.
+        """
+
+        job = self.get(job_id)
+        if job.status == "completed":
+            return job
+
+        candidates: list[Path] = []
+        if job.result_json_path:
+            candidates.append(Path(job.result_json_path))
+        candidates.append(Path(job.output_dir) / "research_result.json")
+
+        result_path = next((path for path in candidates if path.is_file()), None)
+        if result_path is None:
+            return job
+        try:
+            result = ResearchResult.model_validate_json(result_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return job
+
+        output_dir = Path(job.output_dir)
+        excel_candidate = Path(result.excel_path or "")
+        if not excel_candidate.is_file():
+            excel_candidate = output_dir / "complete_research.xlsx"
+        table_csv = output_dir / "displayed_products.csv"
+        table_json = output_dir / "displayed_products.json"
+
+        summary = {**job.summary, **_result_summary(result)}
+        summary["run_id"] = result.run_id
+        summary["job_id"] = job.job_id
+        summary["excel_path"] = str(excel_candidate) if excel_candidate.is_file() else result.excel_path
+        material_artifacts = {
+            "material_csv_path": output_dir / "trademark_materials.csv",
+            "material_json_path": output_dir / "trademark_materials.json",
+            "material_excel_path": output_dir / "trademark_materials.xlsx",
+        }
+        for key, path in material_artifacts.items():
+            if path.is_file():
+                summary[key] = str(path)
+
+        completed_at = result.completed_at.isoformat()
+        with closing(self.connect()) as connection:
+            connection.execute(
+                """UPDATE research_jobs
+                SET status = 'completed', stage = 'completed', progress = 100,
+                    message = 'Research complete (restored from durable artifacts)',
+                    completed_at = ?, updated_at = ?, run_id = ?, excel_path = ?,
+                    table_csv_path = ?, table_json_path = ?, result_json_path = ?,
+                    error = NULL, summary_json = ?, execution_token = NULL, heartbeat_at = NULL
+                WHERE job_id = ?""",
+                (
+                    completed_at,
+                    utc_now().isoformat(),
+                    result.run_id,
+                    str(excel_candidate) if excel_candidate.is_file() else result.excel_path,
+                    str(table_csv) if table_csv.is_file() else job.table_csv_path,
+                    str(table_json) if table_json.is_file() else job.table_json_path,
+                    str(result_path),
+                    json.dumps(summary, separators=(",", ":"), default=str),
+                    job_id,
+                ),
+            )
+            connection.commit()
+        return self.get(job_id)
 
     def mark_backend_cleared(self, job_id: str) -> ResearchJob:
         return self.update(job_id, backend_cleared_at=utc_now())

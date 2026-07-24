@@ -7,6 +7,14 @@ from celery import Celery
 from .settings import Settings
 
 settings = Settings()
+# Redis redelivers unacknowledged tasks after the visibility timeout. Keep the
+# timeout comfortably above the hard task limit even when an old .env provides
+# an unsafe value.
+visibility_timeout = max(
+    settings.celery_visibility_timeout_seconds,
+    settings.celery_task_time_limit_seconds + 3_600,
+)
+
 celery_app = Celery(
     "mattress_intelligence",
     broker=settings.celery_broker_url,
@@ -30,4 +38,7 @@ celery_app.conf.update(
     result_expires=settings.celery_result_expires_seconds,
     task_send_sent_event=True,
     worker_send_task_events=True,
+    broker_transport_options={"visibility_timeout": visibility_timeout},
+    result_backend_transport_options={"visibility_timeout": visibility_timeout},
+    visibility_timeout=visibility_timeout,
 )

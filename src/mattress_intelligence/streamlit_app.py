@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +14,7 @@ import streamlit as st
 
 from .exporter import (
     primary_table_frame,
+    trademark_material_frame,
     table_csv_bytes,
     table_excel_bytes,
     table_json_bytes,
@@ -35,7 +37,11 @@ _STAGE_LABELS = {
     "discovering": "Discovering official, catalogue, and external evidence URLs",
     "crawling": "Capturing official pages, catalogues, and product pages",
     "extracting": "Extracting products, prices, variants, and explicit specifications",
-    "assets": "Downloading images and catalogue pages; running OCR and vision",
+    "assets": "Downloading images and catalogue pages; running OCR and forensic vision",
+    "visual_followup": "Searching and capturing diagram-matched brochures, archives, patents, and teardowns",
+    "material_decoding": "Reading proprietary material names and preparing evidence searches",
+    "material_evidence": "Crawling technical documents for material identity and density evidence",
+    "material_adjudication": "Decoding trademarked materials and grading density evidence",
     "resolving": "Resolving duplicate product records and evidence",
     "analyzing": "Generating evidence-ranked construction configurations",
     "exporting": "Saving the complete run and downloads",
@@ -44,9 +50,25 @@ _STAGE_LABELS = {
 }
 
 
+def _display_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list, tuple, set)):
+        return json.dumps(value, ensure_ascii=False, default=str)
+    return str(value)
+
+
+def _arrow_safe_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    safe = frame.copy()
+    for column in safe.columns:
+        if safe[column].dtype == "object":
+            safe[column] = safe[column].map(_display_value)
+    return safe
+
+
 def _safe_dataframe(rows: list[dict[str, Any]], *, empty_message: str) -> None:
     if rows:
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(_arrow_safe_frame(pd.DataFrame(rows)), width="stretch", hide_index=True)
     else:
         st.caption(empty_message)
 
@@ -147,7 +169,7 @@ def _render_primary_table(result: ResearchResult) -> None:
         "The downloads below are generated from this exact displayed dataset, including the active filters."
     )
     frame = _filtered_primary_table(result)
-    st.dataframe(frame, use_container_width=True, hide_index=True)
+    st.dataframe(frame, width="stretch", hide_index=True)
 
     safe_company = "-".join(result.request.company_name.casefold().split()) or "company"
     download_columns = st.columns(3)
@@ -157,44 +179,312 @@ def _render_primary_table(result: ResearchResult) -> None:
         file_name=f"{safe_company}_products.csv",
         mime="text/csv",
         type="primary",
-        use_container_width=True,
+        width="stretch",
     )
     download_columns[1].download_button(
         "Download displayed table · Excel",
         data=table_excel_bytes(frame),
         file_name=f"{safe_company}_products.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
+        width="stretch",
     )
     download_columns[2].download_button(
         "Download displayed table · JSON",
         data=table_json_bytes(frame),
         file_name=f"{safe_company}_products.json",
         mime="application/json",
-        use_container_width=True,
+        width="stretch",
     )
+
+
+def _filtered_material_table(result: ResearchResult) -> pd.DataFrame:
+    frame = trademark_material_frame(result)
+    if frame.empty:
+        return frame
+    filters = st.columns([2, 1, 1])
+    query = filters[0].text_input(
+        "Search decoded materials",
+        placeholder="Trademark, generic foam, product, function...",
+        key=f"material_search_{result.run_id}",
+    ).strip()
+    identity_options = sorted(
+        {str(value) for value in frame["Identity status"].dropna().tolist() if str(value).strip()}
+    )
+    density_options = sorted(
+        {str(value) for value in frame["Density status"].dropna().tolist() if str(value).strip()}
+    )
+    selected_identity = filters[1].multiselect(
+        "Identity status",
+        identity_options,
+        key=f"material_identity_{result.run_id}",
+    )
+    selected_density = filters[2].multiselect(
+        "Density status",
+        density_options,
+        key=f"material_density_{result.run_id}",
+    )
+    filtered = frame.copy()
+    if query:
+        searchable = filtered.fillna("").astype(str).agg(" ".join, axis=1)
+        filtered = filtered[searchable.str.contains(query, case=False, regex=False)]
+    if selected_identity:
+        filtered = filtered[filtered["Identity status"].astype(str).isin(selected_identity)]
+    if selected_density:
+        filtered = filtered[filtered["Density status"].astype(str).isin(selected_density)]
+    return filtered.reset_index(drop=True)
+
+
+def _render_trademark_materials(result: ResearchResult) -> None:
+    if not result.trademark_materials:
+        st.info(
+            "No proprietary material labels completed the Trademark Material Decoder. "
+            "Open Visual intelligence to confirm whether technical diagrams were captured."
+        )
+        return
+
+    st.markdown("### Trademark Material Decoder")
+    st.caption(
+        "This is the comparison-ready output: manufacturer name, defensible generic identity, "
+        "technical description, density evidence grade, diagram crop, and source scope. "
+        "Generic category ranges remain explicitly marked as comparison-only."
+    )
+    frame = _filtered_material_table(result)
+    st.dataframe(_arrow_safe_frame(frame), width="stretch", hide_index=True)
+
+    safe_company = "-".join(result.request.company_name.casefold().split()) or "company"
+    downloads = st.columns(3)
+    downloads[0].download_button(
+        "Download decoded materials · CSV",
+        data=table_csv_bytes(frame),
+        file_name=f"{safe_company}_trademark_materials.csv",
+        mime="text/csv",
+        type="primary",
+        width="stretch",
+    )
+    downloads[1].download_button(
+        "Download decoded materials · Excel",
+        data=table_excel_bytes(frame),
+        file_name=f"{safe_company}_trademark_materials.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        width="stretch",
+    )
+    downloads[2].download_button(
+        "Download decoded materials · JSON",
+        data=table_json_bytes(frame),
+        file_name=f"{safe_company}_trademark_materials.json",
+        mime="application/json",
+        width="stretch",
+    )
+
+    st.markdown("### Diagram-linked dossiers")
+    for material in result.trademark_materials[:40]:
+        title = f"{material.trademark_name} → {material.generic_material_name}"
+        with st.expander(title, expanded=False):
+            image_column, detail_column = st.columns([1, 2])
+            crop = Path(material.diagram_crop_path) if material.diagram_crop_path else None
+            if crop and crop.is_file():
+                image_column.image(str(crop), width="stretch")
+                image_column.caption("Manufacturer diagram region used for this material record")
+            else:
+                image_column.info("No reliable layer-region crop was available.")
+
+            detail_column.markdown(f"**Product:** {material.product_name or material.family or 'Technology-level'}")
+            detail_column.markdown(f"**What it actually is:** {material.actual_material_description}")
+            detail_column.markdown(f"**Visible description:** {material.visible_description}")
+            detail_column.markdown(
+                f"**Identity:** `{material.identity_status}` · "
+                f"confidence {material.identity_confidence:.2f} · scope `{material.evidence_scope}`"
+            )
+            if material.density_representative_kg_m3 is not None:
+                density_text = f"{material.density_representative_kg_m3:g} kg/m³"
+            elif material.density_min_kg_m3 is not None or material.density_max_kg_m3 is not None:
+                density_text = (
+                    f"{material.density_min_kg_m3 or '?'}–"
+                    f"{material.density_max_kg_m3 or '?'} kg/m³"
+                )
+            else:
+                density_text = "Unknown"
+            detail_column.markdown(
+                f"**Density:** {density_text} · `{material.density_status}` · "
+                f"grade `{material.density_grade}` · confidence {material.density_confidence:.2f}"
+            )
+            detail_column.caption(material.density_basis)
+            if material.additives_or_structure:
+                detail_column.markdown(
+                    "**Additives / structure:** " + " · ".join(material.additives_or_structure)
+                )
+            if material.probable_functions:
+                detail_column.markdown(
+                    "**Probable functions:** " + " · ".join(material.probable_functions)
+                )
+            if material.unknowns:
+                detail_column.markdown("**Still unknown:** " + " · ".join(material.unknowns))
+            if material.contradictions:
+                detail_column.warning("Contradictions: " + " · ".join(material.contradictions))
+
+            if material.evidence_sources:
+                st.markdown("#### Evidence ladder")
+                _safe_dataframe(
+                    [
+                        {
+                            "Source": evidence.title or evidence.url,
+                            "Type": evidence.source_kind,
+                            "Scope": evidence.evidence_scope,
+                            "Identity": evidence.supports_identity,
+                            "Density": evidence.supports_density,
+                            "Density min": evidence.density_min_kg_m3,
+                            "Density max": evidence.density_max_kg_m3,
+                            "Confidence": evidence.confidence,
+                            "Excerpt": evidence.excerpt,
+                            "URL": evidence.url,
+                        }
+                        for evidence in material.evidence_sources
+                    ],
+                    empty_message="No source records were returned.",
+                )
+
+
+def _visual_summary_rows(result: ResearchResult) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for asset in result.assets:
+        payload = asset.vision_payload or {}
+        if not payload:
+            continue
+        product_names = [
+            str(product.get("name") or "").strip()
+            for product in payload.get("products") or []
+            if str(product.get("name") or "").strip()
+        ]
+        rows.append(
+            {
+                "Asset": asset.asset_id[:8],
+                "Type": payload.get("asset_type"),
+                "Products": ", ".join(product_names),
+                "Confidence": asset.vision_confidence,
+                "Second-pass audited": asset.vision_verified,
+                "Vision priority": asset.vision_priority,
+                "Summary": payload.get("diagram_summary"),
+                "Technology terms": " | ".join(payload.get("technology_terms") or []),
+                "Page": asset.page_url,
+                "Image": asset.asset_url,
+            }
+        )
+    return rows
+
+
+def _visual_layer_rows(result: ResearchResult) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for asset in result.assets:
+        payload = asset.vision_payload or {}
+        for product in payload.get("products") or []:
+            for layer in product.get("layers") or []:
+                rows.append(
+                    {
+                        "Asset": asset.asset_id[:8],
+                        "Product": product.get("name") or product.get("family"),
+                        "Position": layer.get("position"),
+                        "Printed / marketing label": layer.get("marketing_name"),
+                        "Generic class": layer.get("generic_material_class"),
+                        "Normalized material": layer.get("normalized_material"),
+                        "Assignment": layer.get("assignment_scope"),
+                        "Evidence status": layer.get("evidence_status"),
+                        "Visible label": layer.get("visible_label"),
+                        "Callout": layer.get("callout_text"),
+                        "Thickness (mm)": layer.get("thickness_mm"),
+                        "Density (kg/m³)": layer.get("density_kg_m3"),
+                        "Region": layer.get("region"),
+                        "Confidence": layer.get("confidence"),
+                        "Source": asset.page_url,
+                    }
+                )
+        for region in payload.get("unassigned_regions") or []:
+            rows.append(
+                {
+                    "Asset": asset.asset_id[:8],
+                    "Product": None,
+                    "Position": region.get("position"),
+                    "Printed / marketing label": None,
+                    "Generic class": region.get("generic_material_class"),
+                    "Normalized material": None,
+                    "Assignment": "unassigned visual region",
+                    "Evidence status": "visually_classified",
+                    "Visible label": None,
+                    "Callout": region.get("visual_description"),
+                    "Thickness (mm)": None,
+                    "Density (kg/m³)": None,
+                    "Region": region.get("region"),
+                    "Confidence": region.get("confidence"),
+                    "Source": asset.page_url,
+                }
+            )
+    return rows
+
+
+def _visual_search_rows(result: ResearchResult) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for asset in result.assets:
+        for query in asset.vision_search_queries:
+            rows.append(
+                {
+                    "Asset": asset.asset_id[:8],
+                    "Type": "GPT forensic query",
+                    "Query / URL": query,
+                    "Source image": asset.asset_url,
+                }
+            )
+        for url in asset.vision_followup_urls:
+            rows.append(
+                {
+                    "Asset": asset.asset_id[:8],
+                    "Type": "Captured follow-up candidate",
+                    "Query / URL": url,
+                    "Source image": asset.asset_url,
+                }
+            )
+    return rows
 
 
 def _render_result(result: ResearchResult, job: ResearchJob | None = None) -> None:
     st.success(
         f"Completed: {len(result.products)} products, "
-        f"{len(result.assets)} evidence assets, and {len(result.configurations)} ranked configurations."
+        f"{len(result.assets)} evidence assets, {len(result.trademark_materials)} decoded materials, "
+        f"and {len(result.configurations)} ranked configurations."
     )
 
-    metrics = st.columns(6)
+    metrics = st.columns(7)
     values = (
         ("Products", len(result.products)),
         ("Variants", sum(len(product.variants) for product in result.products)),
         ("Sources", len(result.sources)),
         ("Images / assets", len(result.assets)),
-        ("Configurations", len(result.configurations)),
+        ("Decoded materials", len(result.trademark_materials)),
+        (
+            "Density evidence",
+            sum(1 for item in result.trademark_materials if str(item.density_status) != "unknown"),
+        ),
         ("Coverage", f"{result.coverage.estimated_coverage_percent:.1f}%"),
     )
     for column, (label, value) in zip(metrics, values):
         column.metric(label, value)
 
-    product_tab, config_tab, evidence_tab, image_tab, technical_tab = st.tabs(
-        ["Products", "Construction configurations", "Evidence", "Images", "Technical details"]
+    (
+        product_tab,
+        material_tab,
+        visual_tab,
+        config_tab,
+        evidence_tab,
+        image_tab,
+        technical_tab,
+    ) = st.tabs(
+        [
+            "Products",
+            "Trademark materials",
+            "Visual intelligence",
+            "Construction hypotheses",
+            "Evidence",
+            "Images",
+            "Technical details",
+        ]
     )
 
     with product_tab:
@@ -208,6 +498,27 @@ def _render_result(result: ResearchResult, job: ResearchJob | None = None) -> No
             st.markdown("### Product details")
             for index, product in enumerate(result.products):
                 _render_product(product, expanded=index == 0)
+
+    with material_tab:
+        _render_trademark_materials(result)
+
+    with visual_tab:
+        summaries = _visual_summary_rows(result)
+        layers = _visual_layer_rows(result)
+        searches = _visual_search_rows(result)
+        if not summaries:
+            st.info("No assets completed GPT forensic visual analysis in this session.")
+        else:
+            st.markdown("### GPT-5 nano forensic image analysis")
+            st.caption(
+                "Observed labels and measurements are kept separate from broad visual classifications. "
+                "Unlabelled slabs remain unassigned instead of being converted into fake specifications."
+            )
+            _safe_dataframe(summaries, empty_message="No visual summaries.")
+            st.markdown("### Diagram layers and visible regions")
+            _safe_dataframe(layers, empty_message="No layer regions were extracted.")
+            with st.expander("Forensic search queries and same-session follow-up sources", expanded=True):
+                _safe_dataframe(searches, empty_message="No visual follow-up searches were generated.")
 
     with config_tab:
         if not result.configurations:
@@ -274,7 +585,7 @@ def _render_result(result: ResearchResult, job: ResearchJob | None = None) -> No
             )
 
     with image_tab:
-        visible_assets = sorted(result.assets, key=lambda item: item.relevance_score, reverse=True)
+        visible_assets = sorted(result.assets, key=lambda item: item.vision_priority, reverse=True)
         if not visible_assets:
             st.info("No image or catalogue-page assets were retained.")
         for asset in visible_assets[:24]:
@@ -282,7 +593,7 @@ def _render_result(result: ResearchResult, job: ResearchJob | None = None) -> No
                 columns = st.columns([1, 2])
                 path = Path(asset.local_path) if asset.local_path else None
                 if path and path.exists() and asset.content_type.startswith("image/"):
-                    columns[0].image(str(path), use_container_width=True)
+                    columns[0].image(str(path), width="stretch")
                 else:
                     columns[0].write(asset.kind)
                 columns[1].write(
@@ -291,10 +602,15 @@ def _render_result(result: ResearchResult, job: ResearchJob | None = None) -> No
                         "page": asset.page_url,
                         "asset_url": asset.asset_url,
                         "relevance": asset.relevance_score,
+                        "vision_priority": asset.vision_priority,
+                        "perceptual_hash": asset.perceptual_hash,
                         "ocr_engine": asset.ocr_engine,
                         "ocr_text": asset.ocr_text,
                         "vision_provider": asset.vision_provider,
                         "vision_confidence": asset.vision_confidence,
+                        "vision_verified": asset.vision_verified,
+                        "forensic_queries": asset.vision_search_queries,
+                        "followup_urls": asset.vision_followup_urls,
                     }
                 )
 
@@ -328,7 +644,7 @@ def _render_result(result: ResearchResult, job: ResearchJob | None = None) -> No
             data=excel_path.read_bytes(),
             file_name=excel_path.name,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
+            width="stretch",
         )
 
 
@@ -462,7 +778,10 @@ def _history_frame(jobs: list[ResearchJob]) -> pd.DataFrame:
                 "Submitted (UTC)": job.submitted_at.strftime("%Y-%m-%d %H:%M:%S"),
             }
         )
-    return pd.DataFrame(rows)
+    frame = pd.DataFrame(rows)
+    if "Products" in frame.columns:
+        frame["Products"] = pd.to_numeric(frame["Products"], errors="coerce").astype("Int64")
+    return frame
 
 
 def _clear_session_view() -> None:
@@ -472,6 +791,14 @@ def _clear_session_view() -> None:
 
 def _render_job_history(store: ResearchJobStore, settings: Settings) -> list[ResearchJob]:
     jobs = store.list(limit=settings.ui_history_limit)
+    # Durable artifacts outrank transient Celery state. This also repairs sessions
+    # that an older duplicate delivery incorrectly moved back to RUNNING/FAILED.
+    jobs = [
+        store.recover_completed_from_artifacts(job.job_id)
+        if job.status != "completed"
+        else job
+        for job in jobs
+    ]
     st.markdown("### Research sessions")
     st.caption(
         "Each company has an isolated task ID, output directory, progress record, and downloadable "
@@ -481,7 +808,7 @@ def _render_job_history(store: ResearchJobStore, settings: Settings) -> list[Res
         st.info("No research sessions have been submitted yet.")
         return jobs
 
-    st.dataframe(_history_frame(jobs), use_container_width=True, hide_index=True)
+    st.dataframe(_history_frame(jobs), width="stretch", hide_index=True)
     labels = {
         job.job_id: (
             f"{job.company_name} · {job.status.upper()} · "
@@ -514,7 +841,7 @@ def _render_job_history(store: ResearchJobStore, settings: Settings) -> list[Res
         st.rerun()
     clear_column.button(
         "Clear current view",
-        use_container_width=True,
+        width="stretch",
         on_click=_clear_session_view,
     )
     return jobs
@@ -527,6 +854,7 @@ def _render_selected_job(
     settings: Settings,
 ) -> None:
     previous_state = (job.status, job.stage, job.progress, job.updated_at)
+    job = store.recover_completed_from_artifacts(job.job_id)
     job = _reconcile_celery_state(job, store)
     current_state = (job.status, job.stage, job.progress, job.updated_at)
     if current_state != previous_state:
@@ -604,7 +932,7 @@ def render_app(*, configure_page: bool = True) -> None:
         submitted = st.form_submit_button(
             "Start product research",
             type="primary",
-            use_container_width=True,
+            width="stretch",
         )
 
     st.caption(

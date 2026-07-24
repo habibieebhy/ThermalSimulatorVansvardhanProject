@@ -1,6 +1,11 @@
 """Standalone mattress catalogue intelligence and configuration generation."""
 
-from .models import CompanyResearchRequest, ProductRecord, ResearchResult
+from .models import (
+    CompanyResearchRequest,
+    ProductRecord,
+    ResearchResult,
+    TrademarkMaterialRecord,
+)
 from .pipeline import MattressIntelligencePipeline
 
 __all__ = [
@@ -8,6 +13,7 @@ __all__ = [
     "MattressIntelligencePipeline",
     "ProductRecord",
     "ResearchResult",
+    "TrademarkMaterialRecord",
 ]
 
-__version__ = "1.4.0"
+__version__ = "1.6.1"

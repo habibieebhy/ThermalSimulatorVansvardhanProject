@@ -178,3 +178,64 @@ PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
 The workbook includes Products, Variants, Layers, Assets, Evidence Observations, Discovery Log, Crawl Log, Acquisition Log, Recognition Log, Sources, Similar Products, Configurations, Graph Edges, Review Queue, and Run Metadata.
+export TASK_ID="6c1f6875a5594d319745098760e5c1a2"                                                
+
+while true; do
+  echo                    
+  echo "============================================================"
+  date
+
+  python - <<'PY'
+import os                 
+from celery.result import AsyncResult                 
+from mattress_intelligence.celery_app import celery_app
+    
+task_id = os.environ["TASK_ID"]               
+task = AsyncResult(task_id, app=celery_app)
+    
+print("TASK ID:", task_id)                
+print("STATE:", task.state)
+    
+info = task.info  
+        
+if isinstance(info, dict):                         
+    print("STAGE:", info.get("stage", "not reported"))
+
+    if info.get("current") is not None:
+        print("CURRENT:", info.get("current"))
+
+    if info.get("total") is not None:
+        print("TOTAL:", info.get("total"))
+
+    extra = {                    
+        key: value
+        for key, value in info.items()
+        if key not in {"stage", "current", "total"}
+    }
+
+    if extra:                
+        print("DETAILS:", extra)            
+else:
+    print("INFO:", info)  
+
+  if task.successful():
+    print("RESULT:", task.result)
+
+if task.failed():
+    print("FAILURE:", repr(task.result))
+PY
+
+  printf "Stored artifacts: "
+  find artifacts -type f 2>/dev/null | wc -l
+
+  printf "Generated outputs: "
+  find outputs -type f 2>/dev/null | wc -l
+
+  echo "Recently created artifacts:"
+  find artifacts -type f -mmin -2 2>/dev/null | tail -10
+
+  echo "Recently created outputs:"
+  find outputs -type f -mmin -2 2>/dev/null | tail -10
+
+  sleep 20
+done    

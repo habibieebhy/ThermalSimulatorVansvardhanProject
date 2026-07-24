@@ -12,9 +12,11 @@ import re
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
+
+from .network import RETRYABLE_TRANSPORT_ERRORS, http_error_detail
 
 
 class LLMError(RuntimeError):
@@ -129,6 +131,113 @@ DOCUMENT_RECOGNITION_SCHEMA = {
 # Backward-compatible name used by older tests/integrations.
 DOCUMENT_EXTRACTION_SCHEMA = DOCUMENT_RECOGNITION_SCHEMA
 
+VISION_REGION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "x": {"type": "number", "minimum": 0, "maximum": 1},
+        "y": {"type": "number", "minimum": 0, "maximum": 1},
+        "width": {"type": "number", "minimum": 0, "maximum": 1},
+        "height": {"type": "number", "minimum": 0, "maximum": 1},
+    },
+    "required": ["x", "y", "width", "height"],
+    "additionalProperties": False,
+}
+
+VISION_LAYER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "position": {"type": "integer", "minimum": 1},
+        "marketing_name": {"type": "string"},
+        "normalized_material": {"type": ["string", "null"]},
+        "generic_material_class": {
+            "type": "string",
+            "enum": [
+                "textile_or_cover",
+                "polyurethane_foam",
+                "memory_foam",
+                "latex_foam",
+                "gel_foam",
+                "fiber_or_batting",
+                "microcoil",
+                "pocket_coil",
+                "spring_unit",
+                "base_foam",
+                "other",
+                "unknown",
+            ],
+        },
+        "thickness_mm": {"type": ["number", "null"]},
+        "density_kg_m3": {"type": ["number", "null"]},
+        "visible_label": {"type": "string"},
+        "callout_text": {"type": ["string", "null"]},
+        "assignment_scope": {
+            "type": "string",
+            "enum": ["exact_layer", "layer_zone", "whole_product", "ambiguous"],
+        },
+        "evidence_status": {
+            "type": "string",
+            "enum": [
+                "observed_label",
+                "observed_measurement",
+                "visually_classified",
+                "unknown",
+            ],
+        },
+        "region": {"anyOf": [VISION_REGION_SCHEMA, {"type": "null"}]},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    },
+    "required": [
+        "position",
+        "marketing_name",
+        "normalized_material",
+        "generic_material_class",
+        "thickness_mm",
+        "density_kg_m3",
+        "visible_label",
+        "callout_text",
+        "assignment_scope",
+        "evidence_status",
+        "region",
+        "confidence",
+    ],
+    "additionalProperties": False,
+}
+
+VISION_UNASSIGNED_REGION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "position": {"type": "integer", "minimum": 1},
+        "visual_description": {"type": "string"},
+        "generic_material_class": {
+            "type": "string",
+            "enum": [
+                "textile_or_cover",
+                "polyurethane_foam",
+                "memory_foam",
+                "latex_foam",
+                "gel_foam",
+                "fiber_or_batting",
+                "microcoil",
+                "pocket_coil",
+                "spring_unit",
+                "base_foam",
+                "other",
+                "unknown",
+            ],
+        },
+        "region": {"anyOf": [VISION_REGION_SCHEMA, {"type": "null"}]},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    },
+    "required": [
+        "position",
+        "visual_description",
+        "generic_material_class",
+        "region",
+        "confidence",
+    ],
+    "additionalProperties": False,
+}
+
 VISION_EVIDENCE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -137,13 +246,20 @@ VISION_EVIDENCE_SCHEMA = {
             "type": "string",
             "enum": [
                 "layer_diagram",
+                "cutaway_or_cross_section",
                 "catalogue_page",
                 "specification_table",
+                "law_or_manufacturer_label",
+                "teardown_frame",
                 "product_image",
+                "marketing_or_lifestyle_image",
                 "other",
+                "irrelevant",
             ],
         },
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "diagram_summary": {"type": ["string", "null"]},
+        "visible_text": {"type": ["string", "null"]},
         "products": {
             "type": "array",
             "items": {
@@ -160,29 +276,7 @@ VISION_EVIDENCE_SCHEMA = {
                     "price": {"type": ["number", "null"]},
                     "currency": {"type": ["string", "null"]},
                     "visible_text": {"type": ["string", "null"]},
-                    "layers": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "position": {"type": "integer"},
-                                "marketing_name": {"type": "string"},
-                                "normalized_material": {"type": ["string", "null"]},
-                                "thickness_mm": {"type": ["number", "null"]},
-                                "density_kg_m3": {"type": ["number", "null"]},
-                                "visible_label": {"type": "string"},
-                            },
-                            "required": [
-                                "position",
-                                "marketing_name",
-                                "normalized_material",
-                                "thickness_mm",
-                                "density_kg_m3",
-                                "visible_label",
-                            ],
-                            "additionalProperties": False,
-                        },
-                    },
+                    "layers": {"type": "array", "items": VISION_LAYER_SCHEMA},
                 },
                 "required": [
                     "is_specific_model",
@@ -201,9 +295,26 @@ VISION_EVIDENCE_SCHEMA = {
                 "additionalProperties": False,
             },
         },
+        "unassigned_regions": {
+            "type": "array",
+            "items": VISION_UNASSIGNED_REGION_SCHEMA,
+        },
+        "technology_terms": {"type": "array", "items": {"type": "string"}},
+        "forensic_search_queries": {"type": "array", "items": {"type": "string"}},
         "warnings": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["is_relevant", "asset_type", "confidence", "products", "warnings"],
+    "required": [
+        "is_relevant",
+        "asset_type",
+        "confidence",
+        "diagram_summary",
+        "visible_text",
+        "products",
+        "unassigned_regions",
+        "technology_terms",
+        "forensic_search_queries",
+        "warnings",
+    ],
     "additionalProperties": False,
 }
 
@@ -241,6 +352,225 @@ SEARCH_DISCOVERY_SCHEMA = {
         },
     },
     "required": ["queries_used", "results"],
+    "additionalProperties": False,
+}
+
+
+MATERIAL_EVIDENCE_SCOPES = (
+    "exact_variant",
+    "exact_product",
+    "product_family",
+    "technology",
+    "manufacturer",
+    "comparable_material",
+    "generic_category",
+)
+
+MATERIAL_SOURCE_KINDS = (
+    "official_product",
+    "official_catalogue",
+    "official_other",
+    "retailer",
+    "patent",
+    "teardown",
+    "other",
+)
+
+MATERIAL_EVIDENCE_DISCOVERY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "queries_used": {"type": "array", "items": {"type": "string"}},
+        "results": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "candidate_key": {"type": "string"},
+                    "trademark_name": {"type": "string"},
+                    "query": {"type": "string"},
+                    "url": {"type": "string"},
+                    "title": {"type": ["string", "null"]},
+                    "source_kind": {"type": "string", "enum": list(MATERIAL_SOURCE_KINDS)},
+                    "evidence_scope": {
+                        "type": "string",
+                        "enum": list(MATERIAL_EVIDENCE_SCOPES),
+                    },
+                    "relevance": {"type": "number", "minimum": 0, "maximum": 1},
+                    "reason": {"type": "string"},
+                },
+                "required": [
+                    "candidate_key",
+                    "trademark_name",
+                    "query",
+                    "url",
+                    "title",
+                    "source_kind",
+                    "evidence_scope",
+                    "relevance",
+                    "reason",
+                ],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["queries_used", "results"],
+    "additionalProperties": False,
+}
+
+MATERIAL_DENSITY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "status": {
+            "type": "string",
+            "enum": [
+                "verified_exact",
+                "corroborated_range",
+                "provisional_range",
+                "generic_comparison_only",
+                "unknown",
+            ],
+        },
+        "grade": {
+            "type": "string",
+            "enum": [
+                "A_manufacturer_exact",
+                "B_corroborated_exact",
+                "C_measured_teardown",
+                "D_same_technology",
+                "E_generic_category",
+                "unknown",
+            ],
+        },
+        "minimum_kg_m3": {"type": ["number", "null"]},
+        "maximum_kg_m3": {"type": ["number", "null"]},
+        "representative_kg_m3": {"type": ["number", "null"]},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "basis": {"type": "string"},
+    },
+    "required": [
+        "status",
+        "grade",
+        "minimum_kg_m3",
+        "maximum_kg_m3",
+        "representative_kg_m3",
+        "confidence",
+        "basis",
+    ],
+    "additionalProperties": False,
+}
+
+MATERIAL_EVIDENCE_SOURCE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "url": {"type": "string"},
+        "title": {"type": ["string", "null"]},
+        "source_kind": {"type": "string", "enum": list(MATERIAL_SOURCE_KINDS)},
+        "evidence_scope": {"type": "string", "enum": list(MATERIAL_EVIDENCE_SCOPES)},
+        "supports_identity": {"type": "boolean"},
+        "supports_density": {"type": "boolean"},
+        "excerpt": {"type": ["string", "null"]},
+        "density_min_kg_m3": {"type": ["number", "null"]},
+        "density_max_kg_m3": {"type": ["number", "null"]},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    },
+    "required": [
+        "url",
+        "title",
+        "source_kind",
+        "evidence_scope",
+        "supports_identity",
+        "supports_density",
+        "excerpt",
+        "density_min_kg_m3",
+        "density_max_kg_m3",
+        "confidence",
+    ],
+    "additionalProperties": False,
+}
+
+MATERIAL_DECODER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "materials": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "candidate_key": {"type": "string"},
+                    "visible_description": {"type": "string"},
+                    "generic_material_class": {
+                        "type": "string",
+                        "enum": [
+                            "polyurethane_foam",
+                            "viscoelastic_memory_foam",
+                            "gel_infused_memory_foam",
+                            "latex_foam",
+                            "fiber_or_batting",
+                            "textile_or_cover",
+                            "phase_change_material",
+                            "microcoil",
+                            "pocket_coil",
+                            "spring_unit",
+                            "adhesive_or_bonding",
+                            "other",
+                            "unresolved",
+                        ],
+                    },
+                    "generic_material_name": {"type": "string"},
+                    "actual_material_description": {"type": "string"},
+                    "base_polymer": {"type": ["string", "null"]},
+                    "additives_or_structure": {"type": "array", "items": {"type": "string"}},
+                    "probable_functions": {"type": "array", "items": {"type": "string"}},
+                    "stack_position": {"type": ["string", "null"]},
+                    "identity_status": {
+                        "type": "string",
+                        "enum": [
+                            "verified_primary",
+                            "verified_corroborated",
+                            "probable",
+                            "unresolved",
+                        ],
+                    },
+                    "identity_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                    "evidence_scope": {
+                        "type": "string",
+                        "enum": list(MATERIAL_EVIDENCE_SCOPES),
+                    },
+                    "density": MATERIAL_DENSITY_SCHEMA,
+                    "evidence_sources": {
+                        "type": "array",
+                        "items": MATERIAL_EVIDENCE_SOURCE_SCHEMA,
+                    },
+                    "search_queries_used": {"type": "array", "items": {"type": "string"}},
+                    "contradictions": {"type": "array", "items": {"type": "string"}},
+                    "unknowns": {"type": "array", "items": {"type": "string"}},
+                    "conclusion": {"type": "string"},
+                },
+                "required": [
+                    "candidate_key",
+                    "visible_description",
+                    "generic_material_class",
+                    "generic_material_name",
+                    "actual_material_description",
+                    "base_polymer",
+                    "additives_or_structure",
+                    "probable_functions",
+                    "stack_position",
+                    "identity_status",
+                    "identity_confidence",
+                    "evidence_scope",
+                    "density",
+                    "evidence_sources",
+                    "search_queries_used",
+                    "contradictions",
+                    "unknowns",
+                    "conclusion",
+                ],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["materials"],
     "additionalProperties": False,
 }
 
@@ -340,6 +670,50 @@ class LLMProvider(ABC):
     ) -> dict:
         raise LLMError(f"Image recognition is unavailable for provider {self.name}.")
 
+    def verify_image_analysis(
+        self,
+        *,
+        image_bytes: bytes,
+        content_type: str,
+        source_url: str,
+        page_context: str,
+        first_pass: dict,
+    ) -> dict:
+        return first_pass
+
+    def discover_visual_evidence(
+        self,
+        *,
+        company_name: str,
+        official_domain: str,
+        market: str,
+        analyses: list[dict],
+        limit: int = 8,
+    ) -> list[str]:
+        return []
+
+    def discover_material_evidence(
+        self,
+        *,
+        company_name: str,
+        official_domain: str,
+        market: str,
+        candidates: list[dict],
+        limit: int = 24,
+    ) -> list[dict]:
+        return []
+
+    def decode_trademark_materials(
+        self,
+        *,
+        company_name: str,
+        official_domain: str,
+        market: str,
+        candidates: list[dict],
+        evidence_documents: list[dict],
+    ) -> list[dict]:
+        return []
+
     def check_connection(self) -> dict:
         raise LLMError(f"Connection checks are unavailable for provider {self.name}.")
 
@@ -386,7 +760,7 @@ class OpenAIProvider(LLMProvider):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "brixta-mattress-intelligence/1.3",
+            "User-Agent": "brixta-mattress-intelligence/1.6",
         }
 
     def _request(self, payload: dict) -> dict:
@@ -401,7 +775,7 @@ class OpenAIProvider(LLMProvider):
                 with urlopen(request, timeout=self.timeout_seconds) as response:
                     return json.loads(response.read().decode("utf-8"))
             except HTTPError as exc:
-                detail = exc.read().decode("utf-8", errors="replace")[:2_000]
+                detail = http_error_detail(exc, limit=2_000)
                 retryable = exc.code == 429 or 500 <= exc.code < 600
                 if retryable and attempt < self.max_retries:
                     retry_after = exc.headers.get("Retry-After")
@@ -409,7 +783,7 @@ class OpenAIProvider(LLMProvider):
                     time.sleep(min(delay, 20.0))
                     continue
                 raise LLMError(f"OpenAI HTTP {exc.code}: {detail}") from exc
-            except (URLError, TimeoutError, json.JSONDecodeError) as exc:
+            except RETRYABLE_TRANSPORT_ERRORS + (json.JSONDecodeError,) as exc:
                 if attempt < self.max_retries:
                     time.sleep(min(2**attempt, 20.0))
                     continue
@@ -464,9 +838,9 @@ class OpenAIProvider(LLMProvider):
             with urlopen(request, timeout=self.timeout_seconds) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")[:2_000]
+            detail = http_error_detail(exc, limit=2_000)
             raise LLMError(f"OpenAI model check HTTP {exc.code}: {detail}") from exc
-        except (URLError, TimeoutError, json.JSONDecodeError) as exc:
+        except RETRYABLE_TRANSPORT_ERRORS + (json.JSONDecodeError,) as exc:
             raise LLMError(f"OpenAI model check failed: {exc}") from exc
         return {
             "name": payload.get("id", self.model),
@@ -589,33 +963,22 @@ DOCUMENT TEXT:
         payload["is_product_bearing"] = bool(admitted)
         return payload
 
-    def recognize_image(
+    def _image_structured_request(
         self,
         *,
         image_bytes: bytes,
         content_type: str,
-        source_url: str,
-        page_context: str = "",
+        instructions: str,
+        prompt: str,
+        schema_name: str,
+        schema: dict,
+        reasoning_effort: str = "medium",
     ) -> dict:
         encoded = base64.b64encode(image_bytes).decode("ascii")
         data_url = f"data:{content_type.split(';', 1)[0]};base64,{encoded}"
-        prompt = f"""
-SOURCE PAGE OR CATALOGUE: {source_url}
-PAGE CONTEXT (may be incomplete):
-{page_context[:8_000]}
-
-Read only text and construction information visibly present in this image. Identify exact
-mattress models when the model name is visible. For layer diagrams, preserve the visible
-top-to-bottom order and exact marketing labels. Convert explicit lengths to millimetres and
-explicit density values to kg/m^3. Never infer hidden materials, chemistry, density, thickness,
-weight, price, or product identity. Use null when a value is not visibly present.
-""".strip()
-        payload = {
+        payload: dict = {
             "model": self.model,
-            "instructions": (
-                "You are an evidence transcription worker. The output is observed image evidence, "
-                "not mattress construction analysis. Do not guess or complete missing labels."
-            ),
+            "instructions": instructions,
             "input": [
                 {
                     "role": "user",
@@ -625,14 +988,364 @@ weight, price, or product identity. Use null when a value is not visibly present
                     ],
                 }
             ],
-            "text": {
-                "format": _json_schema_format(
-                    "mattress_image_evidence", VISION_EVIDENCE_SCHEMA
-                )
-            },
+            "text": {"format": _json_schema_format(schema_name, schema)},
+            "reasoning": {"effort": reasoning_effort},
             "store": False,
         }
         return _extract_json_text(self._response_text(self._request(payload)))
+
+    def recognize_image(
+        self,
+        *,
+        image_bytes: bytes,
+        content_type: str,
+        source_url: str,
+        page_context: str = "",
+    ) -> dict:
+        prompt = f"""
+SOURCE PAGE OR CATALOGUE: {source_url}
+PAGE CONTEXT (may be incomplete):
+{page_context[:12_000]}
+
+Perform a forensic reading of this mattress-related image.
+
+1. Classify whether it is a technical layer diagram, cutaway/cross-section, catalogue page,
+   specification table, label, teardown frame, ordinary product image, or irrelevant image.
+2. Transcribe all visible product, technology, material, measurement, density, coil, and
+   construction text exactly enough to search for it later.
+3. For an exploded stack or cutaway, enumerate every visible region from top to bottom.
+4. Link printed labels and callout lines to a precise layer only when the visual connection is
+   clear. Otherwise use assignment_scope=layer_zone or ambiguous.
+5. A colour or texture alone may support a broad visual class, never an exact chemistry,
+   density, ILD, gauge, or thickness.
+6. Numeric thickness and density may be returned only when visibly printed or measured in the
+   image. Never estimate them from apparent scale.
+7. Distinguish observed labels from visual classifications. Unlabelled slabs belong in
+   unassigned_regions rather than being silently named.
+8. Return normalized 0-to-1 bounding boxes when practical: x, y, width, height.
+9. Generate focused forensic web-search queries using exact model names, proprietary technology
+   terms, brochure/catalogue/specification/patent/teardown keywords, and quoted phrases.
+10. Never turn a total mattress height option into an individual layer thickness.
+""".strip()
+        return self._image_structured_request(
+            image_bytes=image_bytes,
+            content_type=content_type,
+            instructions=(
+                "You are BRIXTA's forensic visual-evidence analyst. Extract and classify what the "
+                "image actually supports. Preserve ambiguity. Unsupported values must remain null."
+            ),
+            prompt=prompt,
+            schema_name="mattress_forensic_visual_evidence",
+            schema=VISION_EVIDENCE_SCHEMA,
+            reasoning_effort="medium",
+        )
+
+    def verify_image_analysis(
+        self,
+        *,
+        image_bytes: bytes,
+        content_type: str,
+        source_url: str,
+        page_context: str,
+        first_pass: dict,
+    ) -> dict:
+        prompt = f"""
+SOURCE PAGE OR CATALOGUE: {source_url}
+PAGE CONTEXT:
+{page_context[:8_000]}
+
+FIRST-PASS ANALYSIS:
+{json.dumps(first_pass, ensure_ascii=False)[:24_000]}
+
+Audit the first-pass result against the image. Return a corrected complete result using the same
+schema. Delete unsupported claims, fix layer order, preserve labels verbatim, and lower confidence
+where a callout targets a zone rather than one exact slab. Thickness, density, ILD, coil gauge, and
+chemistry must remain null unless explicitly printed or visibly measured. Keep useful exact search
+queries for corroborating brochures, archived pages, dealer specifications, patents, labels, and
+teardowns.
+""".strip()
+        return self._image_structured_request(
+            image_bytes=image_bytes,
+            content_type=content_type,
+            instructions=(
+                "You are the second-pass evidence auditor. Prefer false negatives over false "
+                "technical claims. Do not preserve a first-pass claim merely because it was supplied."
+            ),
+            prompt=prompt,
+            schema_name="mattress_forensic_visual_audit",
+            schema=VISION_EVIDENCE_SCHEMA,
+            reasoning_effort="medium",
+        )
+
+    def discover_visual_evidence(
+        self,
+        *,
+        company_name: str,
+        official_domain: str,
+        market: str,
+        analyses: list[dict],
+        limit: int = 8,
+    ) -> list[str]:
+        terms: list[str] = []
+        queries: list[str] = []
+        product_names: list[str] = []
+        for analysis in analyses:
+            terms.extend(str(item).strip() for item in analysis.get("technology_terms") or [])
+            queries.extend(
+                str(item).strip() for item in analysis.get("forensic_search_queries") or []
+            )
+            for product in analysis.get("products") or []:
+                name = str(product.get("name") or "").strip()
+                if name:
+                    product_names.append(name)
+        terms = list(dict.fromkeys(item for item in terms if item))[:24]
+        queries = list(dict.fromkeys(item for item in queries if item))[:24]
+        product_names = list(dict.fromkeys(product_names))[:12]
+        if not terms and not queries and not product_names:
+            return []
+
+        prompt = f"""
+Company: {company_name}
+Official domain: {official_domain}
+Market: {market}
+Product/model names read from technical images: {', '.join(product_names) or 'none'}
+Proprietary technology/material terms: {', '.join(terms) or 'none'}
+Forensic queries proposed by visual analysis:
+{chr(10).join(f'- {query}' for query in queries) or '- none'}
+
+Use web search to find at most {max(1, limit)} public URLs that can corroborate or clarify the
+same image/model/technology. Prioritise manufacturer catalogues, high-resolution copies of the
+same diagram, dealer technical PDFs, archived product pages, patents, law/manufacturer labels,
+and exact-model teardowns. Reject generic sleep blogs, location pages, and unrelated models.
+Do not claim that a visually similar foam is chemically identical. Return URLs only when the
+model name, proprietary text, diagram identity, SKU, or a strong technical relationship makes
+it useful evidence.
+""".strip()
+        payload = self._structured_request(
+            instructions=(
+                "You are BRIXTA's visual-evidence corroboration search worker. Find public source "
+                "documents; do not infer hidden mattress specifications."
+            ),
+            input_text=prompt,
+            schema_name="mattress_visual_followup_discovery",
+            schema=SEARCH_DISCOVERY_SCHEMA,
+            use_web_search=True,
+            reasoning_effort="low",
+        )
+        accepted: list[str] = []
+        seen: set[str] = set()
+        for rank, raw in enumerate(payload.get("results") or [], start=1):
+            url = str(raw.get("url") or "").strip().rstrip(".,;")
+            if not url.startswith(("http://", "https://")) or url in seen:
+                continue
+            evidence_value = float(raw.get("evidence_value") or 0.0)
+            source_type = str(raw.get("source_type") or "other")
+            accept = evidence_value >= 0.58 or source_type in {
+                "official_catalogue",
+                "patent",
+                "teardown",
+                "archive",
+                "retailer_product",
+            }
+            self.discovery_log.append(
+                {
+                    "query_number": None,
+                    "query": " | ".join(str(item) for item in payload.get("queries_used") or queries),
+                    "rank": rank,
+                    "url": url,
+                    "title": raw.get("title"),
+                    "score": evidence_value,
+                    "product_likelihood": raw.get("product_likelihood"),
+                    "evidence_value": evidence_value,
+                    "source_type": source_type,
+                    "product_name": raw.get("product_name"),
+                    "is_official": bool(raw.get("is_official")),
+                    "reason": raw.get("reason"),
+                    "accepted": accept,
+                    "source": "openai_visual_followup",
+                    "model": self.model,
+                }
+            )
+            if accept:
+                seen.add(url)
+                accepted.append(url)
+                if len(accepted) >= limit:
+                    break
+        return accepted
+
+    def discover_material_evidence(
+        self,
+        *,
+        company_name: str,
+        official_domain: str,
+        market: str,
+        candidates: list[dict],
+        limit: int = 24,
+    ) -> list[dict]:
+        if not candidates or limit <= 0:
+            return []
+        compact_candidates = [
+            {
+                "candidate_key": item.get("candidate_key"),
+                "trademark_name": item.get("trademark_name"),
+                "product_name": item.get("product_name"),
+                "family": item.get("family"),
+                "visible_label": item.get("visible_label"),
+                "callout_text": item.get("callout_text"),
+                "diagram_summary": item.get("diagram_summary"),
+                "current_generic_class": item.get("current_generic_class"),
+                "source_page_url": item.get("source_page_url"),
+                "search_queries": (item.get("search_queries") or [])[:8],
+            }
+            for item in candidates[:40]
+        ]
+        prompt = f"""
+Company: {company_name}
+Official domain: {official_domain}
+Market: {market}
+
+TRADEMARKED OR PROPRIETARY MATERIAL CANDIDATES:
+{json.dumps(compact_candidates, ensure_ascii=False, indent=2)[:48_000]}
+
+Use web search to find at most {limit} high-value public documents that help determine what these
+named materials actually are and, where publicly disclosed, their numeric density in kg/m³.
+Search exact quoted names, product/model combinations, manufacturer catalogues, dealer training
+sheets, technical PDFs, archived pages, patents, teardowns, labels, and procurement documents.
+
+Priorities:
+1. Exact manufacturer or official technical statements.
+2. Exact-product or exact-family dealer technical documents.
+3. Independent teardowns or measured specifications.
+4. Same proprietary technology used in another identified product.
+5. Generic material-category documents only as comparison evidence.
+
+Do not treat marketing adjectives such as high-density as a number. Do not convert lb/ft³ unless
+the source explicitly supplies the value and context. Do not assign a source from a different
+market or model generation to an exact product; classify its scope honestly. Every URL must be a
+public result actually found during web search. Return the candidate_key that each source supports.
+""".strip()
+        payload = self._structured_request(
+            instructions=(
+                "You are BRIXTA's trademark-material source investigator. Find public evidence that "
+                "decodes proprietary mattress material names. Discovery only: do not manufacture a "
+                "density or composition and do not treat generic ranges as product specifications."
+            ),
+            input_text=prompt,
+            schema_name="mattress_material_evidence_discovery",
+            schema=MATERIAL_EVIDENCE_DISCOVERY_SCHEMA,
+            use_web_search=True,
+            reasoning_effort="medium",
+        )
+        accepted: list[dict] = []
+        seen: set[tuple[str, str]] = set()
+        valid_keys = {str(item.get("candidate_key")) for item in compact_candidates}
+        for raw in payload.get("results") or []:
+            key = str(raw.get("candidate_key") or "")
+            url = str(raw.get("url") or "").strip().rstrip(".,;")
+            relevance = float(raw.get("relevance") or 0.0)
+            if key not in valid_keys or not url.startswith(("http://", "https://")):
+                continue
+            fingerprint = (key, url)
+            if fingerprint in seen or relevance < 0.5:
+                continue
+            seen.add(fingerprint)
+            row = dict(raw)
+            row["url"] = url
+            accepted.append(row)
+            self.discovery_log.append(
+                {
+                    "query_number": None,
+                    "query": raw.get("query"),
+                    "rank": len(accepted),
+                    "url": url,
+                    "title": raw.get("title"),
+                    "score": relevance,
+                    "source_type": raw.get("source_kind"),
+                    "product_name": raw.get("trademark_name"),
+                    "is_official": str(raw.get("source_kind") or "").startswith("official"),
+                    "reason": raw.get("reason"),
+                    "accepted": True,
+                    "source": "openai_material_decoder_search",
+                    "model": self.model,
+                    "candidate_key": key,
+                    "evidence_scope": raw.get("evidence_scope"),
+                }
+            )
+            if len(accepted) >= limit:
+                break
+        return accepted
+
+    def decode_trademark_materials(
+        self,
+        *,
+        company_name: str,
+        official_domain: str,
+        market: str,
+        candidates: list[dict],
+        evidence_documents: list[dict],
+    ) -> list[dict]:
+        if not candidates:
+            return []
+        compact_documents = []
+        remaining = 72_000
+        for document in evidence_documents:
+            if remaining <= 0:
+                break
+            text = str(document.get("text") or "")[:12_000]
+            row = {
+                "url": document.get("url"),
+                "title": document.get("title"),
+                "source_kind": document.get("source_kind"),
+                "candidate_keys": document.get("candidate_keys") or [],
+                "text": text,
+            }
+            compact_documents.append(row)
+            remaining -= len(text)
+        prompt = f"""
+Company: {company_name}
+Official domain: {official_domain}
+Market: {market}
+
+VISUAL MATERIAL CANDIDATES:
+{json.dumps(candidates[:40], ensure_ascii=False, indent=2)[:48_000]}
+
+FETCHED CORROBORATING DOCUMENTS:
+{json.dumps(compact_documents, ensure_ascii=False, indent=2)[:80_000]}
+
+For every candidate_key, produce one final trademark-material dossier.
+
+The business question is: what industrial material is hidden behind the proprietary name, and is
+there defensible density evidence? Compare exact wording, claimed function, base material,
+additives, structure, stack position, product family, market, and model generation. Strip away
+marketing language but do not overstate the conclusion.
+
+Rules:
+- A diagram label is evidence that the named technology appears, not proof of unseen chemistry.
+- "High density", "premium", "HD", colour, pore appearance, or visual thickness are never numeric density.
+- A manufacturer exact numeric value is grade A.
+- Two independent exact technical sources agreeing is grade B.
+- A physically measured teardown is grade C.
+- The same proprietary technology in a different product/market is grade D and provisional only.
+- A generic material-category range is grade E, comparison only, never a product specification.
+- If no defensible value exists, density status must be unknown and all numeric density fields null.
+- Patent evidence normally proves technology-level possibilities, not exact commercial SKU use.
+- Preserve contradictions and unresolved formulation details.
+- Every evidence source must be one of the fetched document URLs or the candidate's original source.
+- Return vivid but technical physical/functional descriptions, not promotional copy.
+""".strip()
+        payload = self._structured_request(
+            instructions=(
+                "You are BRIXTA's trademark-material adjudicator. Use only the supplied visual facts "
+                "and fetched public documents. Prefer an explicit unknown over a plausible invention. "
+                "Produce concise evidence-backed conclusions suitable for engineering comparison."
+            ),
+            input_text=prompt,
+            schema_name="mattress_trademark_material_decoder",
+            schema=MATERIAL_DECODER_SCHEMA,
+            use_web_search=False,
+            reasoning_effort="medium",
+        )
+        return list(payload.get("materials") or [])
 
     def extract_product(self, url: str, page_text: str) -> dict | None:
         products = self.extract_products(url, page_text)
@@ -669,7 +1382,7 @@ class GeminiProvider(LLMProvider):
             "Content-Type": "application/json",
             "Accept": "application/json",
             "x-goog-api-key": self.api_key,
-            "x-goog-api-client": "brixta-mattress-intelligence/1.3",
+            "x-goog-api-client": "brixta-mattress-intelligence/1.6",
         }
 
     def _request(self, payload: dict) -> dict:
@@ -684,7 +1397,7 @@ class GeminiProvider(LLMProvider):
                 with urlopen(request, timeout=self.timeout_seconds) as response:
                     return json.loads(response.read().decode("utf-8"))
             except HTTPError as exc:
-                detail = exc.read().decode("utf-8", errors="replace")[:1_000]
+                detail = http_error_detail(exc, limit=1_000)
                 retryable = exc.code == 429 or 500 <= exc.code < 600
                 if retryable and attempt < self.max_retries:
                     retry_after = exc.headers.get("Retry-After")
@@ -692,7 +1405,7 @@ class GeminiProvider(LLMProvider):
                     time.sleep(min(delay, 20.0))
                     continue
                 raise LLMError(f"Gemini HTTP {exc.code}: {detail}") from exc
-            except (URLError, TimeoutError, json.JSONDecodeError) as exc:
+            except RETRYABLE_TRANSPORT_ERRORS + (json.JSONDecodeError,) as exc:
                 if attempt < self.max_retries:
                     time.sleep(min(2**attempt, 20.0))
                     continue
@@ -705,9 +1418,9 @@ class GeminiProvider(LLMProvider):
             with urlopen(request, timeout=self.timeout_seconds) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")[:1_000]
+            detail = http_error_detail(exc, limit=1_000)
             raise LLMError(f"Gemini model check HTTP {exc.code}: {detail}") from exc
-        except (URLError, TimeoutError, json.JSONDecodeError) as exc:
+        except RETRYABLE_TRANSPORT_ERRORS + (json.JSONDecodeError,) as exc:
             raise LLMError(f"Gemini model check failed: {exc}") from exc
         return {
             "name": payload.get("name", self.model),

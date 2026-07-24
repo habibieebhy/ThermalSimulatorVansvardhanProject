@@ -65,7 +65,7 @@ class Settings:
         default_factory=lambda: _int_env("MATTRESS_INTEL_UI_MAX_ASSETS_PER_DOCUMENT", 8)
     )
     ui_max_vision_assets: int = field(
-        default_factory=lambda: _int_env("MATTRESS_INTEL_UI_MAX_VISION_ASSETS", 8)
+        default_factory=lambda: _int_env("MATTRESS_INTEL_UI_MAX_VISION_ASSETS", 24)
     )
     ui_max_pdf_pages: int = field(
         default_factory=lambda: _int_env("MATTRESS_INTEL_UI_MAX_PDF_PAGES", 40)
@@ -93,6 +93,41 @@ class Settings:
     )
     vision_recognition_threshold: float = field(
         default_factory=lambda: _float_env("MATTRESS_INTEL_VISION_RECOGNITION_THRESHOLD", 0.62)
+    )
+    visual_forensics_enabled: bool = field(
+        default_factory=lambda: _bool_env("MATTRESS_INTEL_VISUAL_FORENSICS_ENABLED", True)
+    )
+    visual_second_pass_enabled: bool = field(
+        default_factory=lambda: _bool_env("MATTRESS_INTEL_VISUAL_SECOND_PASS_ENABLED", True)
+    )
+    visual_followup_enabled: bool = field(
+        default_factory=lambda: _bool_env("MATTRESS_INTEL_VISUAL_FOLLOWUP_ENABLED", True)
+    )
+    visual_followup_max_pages: int = field(
+        default_factory=lambda: _int_env("MATTRESS_INTEL_VISUAL_FOLLOWUP_MAX_PAGES", 8)
+    )
+    visual_followup_max_vision_assets: int = field(
+        default_factory=lambda: _int_env("MATTRESS_INTEL_VISUAL_FOLLOWUP_MAX_VISION_ASSETS", 8)
+    )
+    visual_near_duplicate_distance: int = field(
+        default_factory=lambda: _int_env("MATTRESS_INTEL_VISUAL_NEAR_DUPLICATE_DISTANCE", 5)
+    )
+    visual_min_priority: float = field(
+        default_factory=lambda: _float_env("MATTRESS_INTEL_VISUAL_MIN_PRIORITY", 0.42)
+    )
+    material_decoder_enabled: bool = field(
+        default_factory=lambda: _bool_env("MATTRESS_INTEL_MATERIAL_DECODER_ENABLED", True)
+    )
+    material_decoder_max_terms: int = field(
+        default_factory=lambda: _int_env("MATTRESS_INTEL_MATERIAL_DECODER_MAX_TERMS", 32)
+    )
+    material_decoder_max_evidence_pages: int = field(
+        default_factory=lambda: _int_env(
+            "MATTRESS_INTEL_MATERIAL_DECODER_MAX_EVIDENCE_PAGES", 24
+        )
+    )
+    material_decoder_fetch_workers: int = field(
+        default_factory=lambda: _int_env("MATTRESS_INTEL_MATERIAL_DECODER_FETCH_WORKERS", 3)
     )
 
     # Discovery defaults to Jina, with Firecrawl fallback.
@@ -185,12 +220,18 @@ class Settings:
         default_factory=lambda: _int_env("CELERY_WAIT_TIMEOUT_SECONDS", 7200)
     )
     celery_result_expires_seconds: int = field(
-        default_factory=lambda: _int_env("CELERY_RESULT_EXPIRES_SECONDS", 3600)
+        default_factory=lambda: _int_env("CELERY_RESULT_EXPIRES_SECONDS", 86_400)
+    )
+    celery_visibility_timeout_seconds: int = field(
+        default_factory=lambda: _int_env("CELERY_VISIBILITY_TIMEOUT_SECONDS", 14_400)
+    )
+    celery_job_lease_stale_seconds: int = field(
+        default_factory=lambda: _int_env("CELERY_JOB_LEASE_STALE_SECONDS", 7_800)
     )
 
     user_agent: str = field(
         default_factory=lambda: os.getenv(
-            "MATTRESS_INTEL_USER_AGENT", "BRIXTA-Mattress-Intelligence/1.4 (+evidence-research)"
+            "MATTRESS_INTEL_USER_AGENT", "BRIXTA-Mattress-Intelligence/1.6.1 (+evidence-research)"
         )
     )
     request_timeout_seconds: float = field(

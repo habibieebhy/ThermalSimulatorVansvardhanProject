@@ -190,6 +190,7 @@ def _migrate_payload(payload: dict) -> dict:
         request.setdefault("max_vision_assets", 80)
         request.setdefault("max_pdf_pages", 100)
     payload.setdefault("assets", [])
+    payload.setdefault("trademark_materials", [])
     payload.setdefault("observations", [])
     payload.setdefault("crawl_log", [])
     payload.setdefault("acquisition_log", [])

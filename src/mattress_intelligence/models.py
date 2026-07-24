@@ -47,6 +47,40 @@ class ClaimStatus(StrEnum):
     CONTRADICTED = "contradicted"
 
 
+class MaterialEvidenceScope(StrEnum):
+    EXACT_VARIANT = "exact_variant"
+    EXACT_PRODUCT = "exact_product"
+    PRODUCT_FAMILY = "product_family"
+    TECHNOLOGY = "technology"
+    MANUFACTURER = "manufacturer"
+    COMPARABLE_MATERIAL = "comparable_material"
+    GENERIC_CATEGORY = "generic_category"
+
+
+class MaterialIdentityStatus(StrEnum):
+    VERIFIED_PRIMARY = "verified_primary"
+    VERIFIED_CORROBORATED = "verified_corroborated"
+    PROBABLE = "probable"
+    UNRESOLVED = "unresolved"
+
+
+class DensityEvidenceGrade(StrEnum):
+    A_MANUFACTURER_EXACT = "A_manufacturer_exact"
+    B_CORROBORATED_EXACT = "B_corroborated_exact"
+    C_MEASURED_TEARDOWN = "C_measured_teardown"
+    D_SAME_TECHNOLOGY = "D_same_technology"
+    E_GENERIC_CATEGORY = "E_generic_category"
+    UNKNOWN = "unknown"
+
+
+class DensityEvidenceStatus(StrEnum):
+    VERIFIED_EXACT = "verified_exact"
+    CORROBORATED_RANGE = "corroborated_range"
+    PROVISIONAL_RANGE = "provisional_range"
+    GENERIC_COMPARISON_ONLY = "generic_comparison_only"
+    UNKNOWN = "unknown"
+
+
 class SourceRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -86,10 +120,15 @@ class AssetRecord(BaseModel):
     local_path: str | None = None
     object_uri: str | None = None
     relevance_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    perceptual_hash: str | None = None
+    vision_priority: float = Field(default=0.0, ge=0.0, le=1.0)
     vision_provider: str | None = None
     vision_model: str | None = None
     vision_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     vision_payload: dict[str, Any] | None = None
+    vision_verified: bool = False
+    vision_search_queries: list[str] = Field(default_factory=list)
+    vision_followup_urls: list[str] = Field(default_factory=list)
     ocr_engine: str | None = None
     ocr_text: str | None = None
     ocr_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
@@ -103,6 +142,112 @@ class EvidenceRef(BaseModel):
     locator: str | None = None
     excerpt: str | None = Field(default=None, max_length=1_000)
     reliability: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
+class MaterialEvidenceSource(BaseModel):
+    """One source supporting or contradicting a trademark-material conclusion."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: str
+    title: str | None = None
+    source_kind: SourceKind = SourceKind.OTHER
+    evidence_scope: MaterialEvidenceScope = MaterialEvidenceScope.TECHNOLOGY
+    supports_identity: bool = False
+    supports_density: bool = False
+    excerpt: str | None = Field(default=None, max_length=1_500)
+    density_min_kg_m3: float | None = Field(default=None, gt=0)
+    density_max_kg_m3: float | None = Field(default=None, gt=0)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def order_density_range(self) -> "MaterialEvidenceSource":
+        if (
+            self.density_min_kg_m3 is not None
+            and self.density_max_kg_m3 is not None
+            and self.density_min_kg_m3 > self.density_max_kg_m3
+        ):
+            self.density_min_kg_m3, self.density_max_kg_m3 = (
+                self.density_max_kg_m3,
+                self.density_min_kg_m3,
+            )
+        return self
+
+
+class TrademarkMaterialRecord(BaseModel):
+    """Evidence-backed decoding of one proprietary mattress material name."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    material_id: str
+    company_id: str
+    product_id: str | None = None
+    product_name: str | None = None
+    family: str | None = None
+    market: str
+    trademark_name: str
+    diagram_asset_id: str | None = None
+    diagram_region: dict[str, float] | None = None
+    diagram_crop_path: str | None = None
+    visible_description: str
+    generic_material_class: str
+    generic_material_name: str
+    actual_material_description: str
+    base_polymer: str | None = None
+    additives_or_structure: list[str] = Field(default_factory=list)
+    probable_functions: list[str] = Field(default_factory=list)
+    stack_position: str | None = None
+    identity_status: MaterialIdentityStatus = MaterialIdentityStatus.UNRESOLVED
+    identity_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    evidence_scope: MaterialEvidenceScope = MaterialEvidenceScope.TECHNOLOGY
+    density_status: DensityEvidenceStatus = DensityEvidenceStatus.UNKNOWN
+    density_grade: DensityEvidenceGrade = DensityEvidenceGrade.UNKNOWN
+    density_min_kg_m3: float | None = Field(default=None, gt=0)
+    density_max_kg_m3: float | None = Field(default=None, gt=0)
+    density_representative_kg_m3: float | None = Field(default=None, gt=0)
+    density_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    density_basis: str
+    evidence_sources: list[MaterialEvidenceSource] = Field(default_factory=list)
+    search_queries: list[str] = Field(default_factory=list)
+    contradictions: list[str] = Field(default_factory=list)
+    unknowns: list[str] = Field(default_factory=list)
+    conclusion: str
+
+    @field_validator(
+        "trademark_name",
+        "visible_description",
+        "generic_material_class",
+        "generic_material_name",
+        "actual_material_description",
+        "density_basis",
+        "conclusion",
+    )
+    @classmethod
+    def required_material_text(cls, value: str) -> str:
+        cleaned = " ".join(value.split())
+        if not cleaned:
+            raise ValueError("Trademark-material text fields cannot be empty.")
+        return cleaned
+
+    @model_validator(mode="after")
+    def validate_density_claim(self) -> "TrademarkMaterialRecord":
+        if (
+            self.density_min_kg_m3 is not None
+            and self.density_max_kg_m3 is not None
+            and self.density_min_kg_m3 > self.density_max_kg_m3
+        ):
+            self.density_min_kg_m3, self.density_max_kg_m3 = (
+                self.density_max_kg_m3,
+                self.density_min_kg_m3,
+            )
+        if self.density_status == DensityEvidenceStatus.UNKNOWN:
+            self.density_min_kg_m3 = None
+            self.density_max_kg_m3 = None
+            self.density_representative_kg_m3 = None
+            self.density_confidence = 0.0
+        if self.density_grade == DensityEvidenceGrade.E_GENERIC_CATEGORY:
+            self.density_status = DensityEvidenceStatus.GENERIC_COMPARISON_ONLY
+        return self
 
 
 class LayerRecord(BaseModel):
@@ -348,6 +493,7 @@ class ResearchResult(BaseModel):
     products: list[ProductRecord]
     sources: list[SourceRecord]
     assets: list[AssetRecord] = Field(default_factory=list)
+    trademark_materials: list[TrademarkMaterialRecord] = Field(default_factory=list)
     claims: list[ClaimRecord]
     observations: list[EvidenceObservation] = Field(default_factory=list)
     configurations: list[ConfigurationCandidate]

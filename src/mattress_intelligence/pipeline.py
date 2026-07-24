@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+from collections import defaultdict
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
-from collections.abc import Callable
 
 from .assets import AssetPipeline
 from .configurations import ConfigurationGenerator
@@ -24,6 +26,7 @@ from .inference import BayesianCandidateRanker
 from .firecrawl import FirecrawlClient
 from .jina import JinaReaderClient
 from .llm import LLMError, build_llm_provider
+from .material_decoder import TrademarkMaterialDecoder
 from .materials import MaterialLibrary
 from .models import (
     AssetRecord,
@@ -35,6 +38,7 @@ from .models import (
     ResearchResult,
     SourceKind,
     SourceRecord,
+    TrademarkMaterialRecord,
     stable_id,
 )
 from .search import SearchError, build_search_provider
@@ -267,9 +271,8 @@ class MattressIntelligencePipeline:
                                 confidence=0.70,
                             )
                         )
-        warnings.extend(extractor.warnings)
-
         assets: list[AssetRecord] = []
+        trademark_materials: list[TrademarkMaterialRecord] = []
         acquisition_log: list[dict] = []
         if request.discover_assets and self.settings.discover_assets:
             progress("assets")
@@ -284,9 +287,247 @@ class MattressIntelligencePipeline:
             observations.extend(asset_result.observations)
             acquisition_log.extend(asset_result.log)
             warnings.extend(asset_result.warnings)
+
+            # One bounded corroboration round: GPT reads technical diagrams, proposes exact
+            # brochure/archive/patent/teardown searches, and the pipeline captures those sources
+            # during the same company session. No recursive visual-search loop is allowed.
+            followup_urls = [
+                url
+                for url in asset_result.visual_followup_urls
+                if url not in {document.url for document in report.documents}
+            ][: self.settings.visual_followup_max_pages]
+            if followup_urls:
+                progress("visual_followup", current=0, total=len(followup_urls))
+                followup_primary, followup_fetcher = self._build_fetchers(request)
+                followup_documents = []
+                followup_sources: list[SourceRecord] = []
+                try:
+                    for followup_index, url in enumerate(followup_urls, start=1):
+                        progress(
+                            "visual_followup",
+                            current=followup_index,
+                            total=len(followup_urls),
+                        )
+                        report.discovered_urls.add(url)
+                        try:
+                            document = followup_fetcher.fetch(url)
+                        except FetchError as exc:
+                            report.failed_urls[url] = str(exc)
+                            report.crawl_log.append(
+                                {
+                                    "stage": "visual_followup",
+                                    "action": "failed",
+                                    "url": url,
+                                    "reason": str(exc),
+                                }
+                            )
+                            continue
+                        report.documents.append(document)
+                        followup_documents.append(document)
+                        report.crawl_log.append(
+                            {
+                                "stage": "visual_followup",
+                                "action": "fetched",
+                                "url": document.url,
+                                "status": document.status,
+                                "content_type": document.content_type,
+                                "bytes": len(document.body),
+                                "artifact_path": document.artifact_path,
+                                "object_uri": document.object_uri,
+                                "capture_method": document.capture_method,
+                                "reason": "GPT visual-evidence corroboration query",
+                            }
+                        )
+                        extracted_products, source, document_observations = extractor.extract_document(
+                            document, request
+                        )
+                        sources.append(source)
+                        followup_sources.append(source)
+                        raw_products.extend(extracted_products)
+                        observations.extend(document_observations)
+                finally:
+                    followup_fetcher.close()
+
+                if followup_documents:
+                    followup_request = request.model_copy(
+                        update={
+                            "max_vision_assets": min(
+                                request.max_vision_assets,
+                                self.settings.visual_followup_max_vision_assets,
+                            )
+                        }
+                    )
+                    followup_assets = AssetPipeline(
+                        self.settings,
+                        followup_primary.object_store,
+                        self.materials,
+                        self.llm,
+                    ).process(
+                        followup_documents,
+                        followup_sources,
+                        followup_request,
+                        discover_followups=False,
+                        vision_limit=self.settings.visual_followup_max_vision_assets,
+                    )
+                    assets.extend(followup_assets.assets)
+                    raw_products.extend(followup_assets.products)
+                    observations.extend(followup_assets.observations)
+                    acquisition_log.extend(followup_assets.log)
+                    warnings.extend(followup_assets.warnings)
         else:
             warnings.append("Asset discovery was disabled for this run.")
 
+        if (
+            self.settings.material_decoder_enabled
+            and self.llm.name == "openai"
+            and assets
+        ):
+            progress("material_decoding")
+            decoder = TrademarkMaterialDecoder(self.llm)
+            candidates = decoder.collect_candidates(
+                assets,
+                raw_products,
+                limit=self.settings.material_decoder_max_terms,
+            )
+            destination = output_path or self.settings.output_dir / f"{run_id}.xlsx"
+            decoder.create_crops(candidates, assets, destination.parent)
+
+            discovery = decoder.discover(
+                company_name=request.company_name,
+                official_domain=request.official_domain,
+                market=request.market,
+                candidates=candidates,
+                max_urls=self.settings.material_decoder_max_evidence_pages,
+            )
+            warnings.extend(discovery.warnings)
+
+            candidate_keys_by_url: dict[str, set[str]] = defaultdict(set)
+            source_kind_by_url: dict[str, str] = {
+                source.url: str(source.kind) for source in sources
+            }
+            for candidate in candidates:
+                if candidate.source_page_url:
+                    candidate_keys_by_url[candidate.source_page_url].add(candidate.candidate_key)
+                    source_kind_by_url.setdefault(candidate.source_page_url, "official_product")
+            for row in discovery.discovery_rows:
+                url = str(row.get("url") or "").strip()
+                key = str(row.get("candidate_key") or "").strip()
+                if url and key:
+                    candidate_keys_by_url[url].add(key)
+                    source_kind_by_url[url] = str(row.get("source_kind") or "other")
+
+            documents_by_url = {document.url: document for document in report.documents}
+            urls_to_fetch = [
+                url
+                for url in discovery.discovery_urls
+                if url not in documents_by_url
+            ]
+            if urls_to_fetch:
+                progress("material_evidence", current=0, total=len(urls_to_fetch))
+
+                def fetch_material_document(url: str):
+                    _, evidence_fetcher = self._build_fetchers(request)
+                    try:
+                        return evidence_fetcher.fetch(url)
+                    finally:
+                        evidence_fetcher.close()
+
+                workers = min(
+                    max(1, self.settings.material_decoder_fetch_workers),
+                    len(urls_to_fetch),
+                )
+                completed_fetches = 0
+                with ThreadPoolExecutor(max_workers=workers) as executor:
+                    future_by_url = {
+                        executor.submit(fetch_material_document, url): url
+                        for url in urls_to_fetch
+                    }
+                    for future in as_completed(future_by_url):
+                        url = future_by_url[future]
+                        completed_fetches += 1
+                        progress(
+                            "material_evidence",
+                            current=completed_fetches,
+                            total=len(urls_to_fetch),
+                        )
+                        report.discovered_urls.add(url)
+                        try:
+                            document = future.result()
+                        except (FetchError, OSError, RuntimeError) as exc:
+                            report.failed_urls[url] = str(exc)
+                            report.crawl_log.append(
+                                {
+                                    "stage": "material_evidence",
+                                    "action": "failed",
+                                    "url": url,
+                                    "reason": str(exc),
+                                }
+                            )
+                            continue
+                        documents_by_url[document.url] = document
+                        report.documents.append(document)
+                        report.crawl_log.append(
+                            {
+                                "stage": "material_evidence",
+                                "action": "fetched",
+                                "url": document.url,
+                                "status": document.status,
+                                "content_type": document.content_type,
+                                "bytes": len(document.body),
+                                "artifact_path": document.artifact_path,
+                                "object_uri": document.object_uri,
+                                "capture_method": document.capture_method,
+                                "reason": "GPT trademark-material evidence search",
+                            }
+                        )
+                        extracted_products, source, document_observations = extractor.extract_document(
+                            document,
+                            request,
+                        )
+                        sources.append(source)
+                        raw_products.extend(extracted_products)
+                        observations.extend(document_observations)
+
+            evidence_documents: list[dict[str, object]] = []
+            for url, candidate_keys in candidate_keys_by_url.items():
+                document = documents_by_url.get(url)
+                if document is None:
+                    continue
+                try:
+                    text = document.extracted_text(max_characters=24_000)
+                except FetchError:
+                    text = ""
+                if not text:
+                    continue
+                source = next((item for item in sources if item.url == document.url), None)
+                evidence_documents.append(
+                    {
+                        "url": document.url,
+                        "title": source.title if source else None,
+                        "source_kind": source_kind_by_url.get(url, "other"),
+                        "candidate_keys": sorted(candidate_keys),
+                        "text": text,
+                    }
+                )
+
+            progress("material_adjudication")
+            adjudication = decoder.adjudicate(
+                company_id=request.company_id,
+                company_name=request.company_name,
+                official_domain=request.official_domain,
+                market=request.market,
+                candidates=candidates,
+                evidence_documents=evidence_documents,
+            )
+            trademark_materials = adjudication.records
+            warnings.extend(adjudication.warnings)
+        elif self.settings.material_decoder_enabled and self.llm.name != "openai":
+            warnings.append(
+                "Trademark Material Decoder requires the OpenAI provider; visual evidence was retained "
+                "without web-search adjudication."
+            )
+
+        warnings.extend(extractor.warnings)
         if self.llm.name == "none":
             warnings.append(
                 "Deterministic-only extraction active: JSON-LD, metadata, HTML tables, "
@@ -302,6 +543,7 @@ class MattressIntelligencePipeline:
             products=products,
             sources=sources,
             assets=assets,
+            trademark_materials=trademark_materials,
             observations=observations,
             warnings=warnings,
             discovered_urls=len(report.discovered_urls),
@@ -309,7 +551,16 @@ class MattressIntelligencePipeline:
             failed_urls=len(report.failed_urls) + len(report.blocked_urls),
             sitemap_count=len(report.sitemap_urls),
             output_path=output_path,
-            discovery_log=list(getattr(self.search_provider, "discovery_log", []) or []),
+            discovery_log=[
+                json.loads(item)
+                for item in dict.fromkeys(
+                    json.dumps(entry, sort_keys=True, default=str)
+                    for entry in [
+                        *(getattr(self.search_provider, "discovery_log", []) or []),
+                        *(getattr(self.llm, "discovery_log", []) or []),
+                    ]
+                )
+            ],
             crawl_log=report.crawl_log,
             acquisition_log=acquisition_log,
             recognition_log=extractor.recognition_log,
@@ -384,6 +635,7 @@ class MattressIntelligencePipeline:
             products=products,
             sources=sources,
             assets=[],
+            trademark_materials=[],
             observations=[],
             warnings=["Catalogue was imported from structured JSON; web coverage was not measured."],
             discovered_urls=len(sources),
@@ -407,6 +659,7 @@ class MattressIntelligencePipeline:
         products: list[ProductRecord],
         sources: list[SourceRecord],
         assets: list[AssetRecord],
+        trademark_materials: list[TrademarkMaterialRecord],
         observations: list[EvidenceObservation],
         warnings: list[str],
         discovered_urls: int,
@@ -524,6 +777,7 @@ class MattressIntelligencePipeline:
             products=products,
             sources=sources,
             assets=assets,
+            trademark_materials=trademark_materials,
             claims=claims,
             observations=observations,
             configurations=configurations,

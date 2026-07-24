@@ -15,23 +15,49 @@ from .models import ResearchResult
 
 
 def primary_table_frame(result: ResearchResult) -> pd.DataFrame:
-    """Return the exact product table used by the Streamlit UI and quick exports."""
+    """Return the exact evidence-first product table used by Streamlit and quick exports."""
 
-    rows = [
-        {
-            "Product": product.name,
-            "Family": product.family,
-            "Firmness": product.firmness,
-            "Thickness (mm)": product.total_thickness_mm,
-            "Price": product.price,
-            "Currency": product.currency,
-            "Layers": len(product.layers),
-            "Variants": len(product.variants),
-            "Confidence": round(product.extraction_confidence, 3),
-            "URL": product.canonical_url,
-        }
-        for product in result.products
-    ]
+    rows: list[dict[str, Any]] = []
+    for product in result.products:
+        observed_components = list(
+            dict.fromkeys(layer.marketing_name for layer in product.layers if layer.marketing_name)
+        )
+        density_count = sum(layer.density_kg_m3 is not None for layer in product.layers)
+        thickness_count = sum(layer.thickness_mm is not None for layer in product.layers)
+        if product.layers and density_count and thickness_count == len(product.layers):
+            construction_status = "Observed stack with measurements"
+        elif product.layers:
+            construction_status = "Partial observed construction"
+        else:
+            construction_status = "Construction not publicly verified"
+        visual_assets = 0
+        for asset in result.assets:
+            payload = asset.vision_payload or {}
+            names = {
+                str(item.get("name") or "").strip().casefold()
+                for item in payload.get("products") or []
+            }
+            if product.name.casefold() in names:
+                visual_assets += 1
+        rows.append(
+            {
+                "Product": product.name,
+                "Family": product.family,
+                "Firmness": product.firmness,
+                "Thickness (mm)": product.total_thickness_mm,
+                "Price": product.price,
+                "Currency": product.currency,
+                "Observed components": " | ".join(observed_components),
+                "Observed component count": len(product.layers),
+                "Layer thickness evidence": thickness_count,
+                "Density evidence": density_count,
+                "Visual evidence assets": visual_assets,
+                "Construction status": construction_status,
+                "Variants": len(product.variants),
+                "Extraction confidence": round(product.extraction_confidence, 3),
+                "URL": product.canonical_url,
+            }
+        )
     return pd.DataFrame(
         rows,
         columns=[
@@ -41,12 +67,62 @@ def primary_table_frame(result: ResearchResult) -> pd.DataFrame:
             "Thickness (mm)",
             "Price",
             "Currency",
-            "Layers",
+            "Observed components",
+            "Observed component count",
+            "Layer thickness evidence",
+            "Density evidence",
+            "Visual evidence assets",
+            "Construction status",
             "Variants",
-            "Confidence",
+            "Extraction confidence",
             "URL",
         ],
     )
+
+
+def trademark_material_frame(result: ResearchResult) -> pd.DataFrame:
+    """Return the primary trademark-decoder table used by Streamlit and downloads."""
+
+    rows: list[dict[str, Any]] = []
+    for material in result.trademark_materials:
+        if material.density_status == "verified_exact":
+            density = material.density_representative_kg_m3
+        elif material.density_min_kg_m3 is not None or material.density_max_kg_m3 is not None:
+            lower = material.density_min_kg_m3
+            upper = material.density_max_kg_m3
+            density = (
+                f"{lower:g}–{upper:g} kg/m³"
+                if lower is not None and upper is not None and lower != upper
+                else f"{(lower if lower is not None else upper):g} kg/m³"
+            )
+        else:
+            density = "Unknown"
+        rows.append(
+            {
+                "Product": material.product_name or material.family,
+                "Diagram crop": material.diagram_crop_path,
+                "Trademark / branded name": material.trademark_name,
+                "What it actually is": material.generic_material_name,
+                "Technical description": material.actual_material_description,
+                "Base material": material.base_polymer,
+                "Additives / structure": " | ".join(material.additives_or_structure),
+                "Probable function": " | ".join(material.probable_functions),
+                "Stack position": material.stack_position,
+                "Identity status": material.identity_status,
+                "Identity confidence": material.identity_confidence,
+                "Evidence scope": material.evidence_scope,
+                "Density": density,
+                "Density status": material.density_status,
+                "Density grade": material.density_grade,
+                "Density confidence": material.density_confidence,
+                "Density basis": material.density_basis,
+                "Evidence sources": len(material.evidence_sources),
+                "Contradictions": " | ".join(material.contradictions),
+                "Unknowns": " | ".join(material.unknowns),
+                "Conclusion": material.conclusion,
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def table_csv_bytes(frame: pd.DataFrame) -> bytes:
@@ -77,12 +153,22 @@ def export_primary_artifacts(result: ResearchResult, output_dir: Path) -> dict[s
     csv_path = output_dir / "displayed_products.csv"
     json_path = output_dir / "displayed_products.json"
     result_path = output_dir / "research_result.json"
+    material_frame = trademark_material_frame(result)
+    material_csv_path = output_dir / "trademark_materials.csv"
+    material_json_path = output_dir / "trademark_materials.json"
+    material_excel_path = output_dir / "trademark_materials.xlsx"
     csv_path.write_bytes(table_csv_bytes(frame))
     json_path.write_bytes(table_json_bytes(frame))
+    material_csv_path.write_bytes(table_csv_bytes(material_frame))
+    material_json_path.write_bytes(table_json_bytes(material_frame))
+    material_excel_path.write_bytes(table_excel_bytes(material_frame))
     result_path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
     return {
         "table_csv_path": str(csv_path),
         "table_json_path": str(json_path),
+        "material_csv_path": str(material_csv_path),
+        "material_json_path": str(material_json_path),
+        "material_excel_path": str(material_excel_path),
         "result_json_path": str(result_path),
     }
 
@@ -202,6 +288,154 @@ def _asset_rows(result: ResearchResult) -> list[dict[str, Any]]:
     ]
 
 
+def _visual_evidence_rows(result: ResearchResult) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for asset in result.assets:
+        payload = asset.vision_payload or {}
+        if not payload:
+            continue
+        products = [
+            str(product.get("name") or "").strip()
+            for product in payload.get("products") or []
+            if str(product.get("name") or "").strip()
+        ]
+        rows.append(
+            {
+                "asset_id": asset.asset_id,
+                "asset_type": payload.get("asset_type"),
+                "products": " | ".join(products),
+                "confidence": asset.vision_confidence,
+                "second_pass_verified": asset.vision_verified,
+                "vision_priority": asset.vision_priority,
+                "perceptual_hash": asset.perceptual_hash,
+                "diagram_summary": payload.get("diagram_summary"),
+                "visible_text": payload.get("visible_text"),
+                "technology_terms": " | ".join(payload.get("technology_terms") or []),
+                "page_url": asset.page_url,
+                "asset_url": asset.asset_url,
+                "local_path": asset.local_path,
+            }
+        )
+    return rows
+
+
+def _visual_layer_rows(result: ResearchResult) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for asset in result.assets:
+        payload = asset.vision_payload or {}
+        for product in payload.get("products") or []:
+            for layer in product.get("layers") or []:
+                rows.append(
+                    {
+                        "asset_id": asset.asset_id,
+                        "product": product.get("name") or product.get("family"),
+                        "position": layer.get("position"),
+                        "marketing_name": layer.get("marketing_name"),
+                        "generic_material_class": layer.get("generic_material_class"),
+                        "normalized_material": layer.get("normalized_material"),
+                        "assignment_scope": layer.get("assignment_scope"),
+                        "evidence_status": layer.get("evidence_status"),
+                        "visible_label": layer.get("visible_label"),
+                        "callout_text": layer.get("callout_text"),
+                        "thickness_mm": layer.get("thickness_mm"),
+                        "density_kg_m3": layer.get("density_kg_m3"),
+                        "region": _flat(layer.get("region")),
+                        "confidence": layer.get("confidence"),
+                        "page_url": asset.page_url,
+                        "asset_url": asset.asset_url,
+                    }
+                )
+        for region in payload.get("unassigned_regions") or []:
+            rows.append(
+                {
+                    "asset_id": asset.asset_id,
+                    "product": None,
+                    "position": region.get("position"),
+                    "marketing_name": None,
+                    "generic_material_class": region.get("generic_material_class"),
+                    "normalized_material": None,
+                    "assignment_scope": "unassigned visual region",
+                    "evidence_status": "visually_classified",
+                    "visible_label": None,
+                    "callout_text": region.get("visual_description"),
+                    "thickness_mm": None,
+                    "density_kg_m3": None,
+                    "region": _flat(region.get("region")),
+                    "confidence": region.get("confidence"),
+                    "page_url": asset.page_url,
+                    "asset_url": asset.asset_url,
+                }
+            )
+    return rows
+
+
+def _visual_search_rows(result: ResearchResult) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for asset in result.assets:
+        for query in asset.vision_search_queries:
+            key = (asset.asset_id, "query", query)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(
+                {
+                    "asset_id": asset.asset_id,
+                    "record_type": "forensic_query",
+                    "query_or_url": query,
+                    "source_image": asset.asset_url,
+                    "source_page": asset.page_url,
+                }
+            )
+        for url in asset.vision_followup_urls:
+            key = (asset.asset_id, "followup_url", url)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(
+                {
+                    "asset_id": asset.asset_id,
+                    "record_type": "followup_url",
+                    "query_or_url": url,
+                    "source_image": asset.asset_url,
+                    "source_page": asset.page_url,
+                }
+            )
+    return rows
+
+
+def _trademark_material_rows(result: ResearchResult) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for material in result.trademark_materials:
+        rows.append(
+            {
+                **material.model_dump(exclude={"evidence_sources"}),
+                "additives_or_structure": " | ".join(material.additives_or_structure),
+                "probable_functions": " | ".join(material.probable_functions),
+                "search_queries": " | ".join(material.search_queries),
+                "contradictions": " | ".join(material.contradictions),
+                "unknowns": " | ".join(material.unknowns),
+                "evidence_source_count": len(material.evidence_sources),
+            }
+        )
+    return rows
+
+
+def _material_evidence_rows(result: ResearchResult) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for material in result.trademark_materials:
+        for evidence in material.evidence_sources:
+            rows.append(
+                {
+                    "material_id": material.material_id,
+                    "product": material.product_name or material.family,
+                    "trademark_name": material.trademark_name,
+                    **evidence.model_dump(),
+                }
+            )
+    return rows
+
+
 def _observation_rows(result: ResearchResult) -> list[dict[str, Any]]:
     return [
         {
@@ -280,6 +514,13 @@ def _frames(result: ResearchResult) -> dict[str, pd.DataFrame]:
         {"key": "web_search_enabled", "value": result.request.use_search_grounding},
         {"key": "assets", "value": len(result.assets)},
         {"key": "vision_assets", "value": sum(1 for item in result.assets if item.vision_payload)},
+        {"key": "trademark_materials", "value": len(result.trademark_materials)},
+        {
+            "key": "materials_with_density_evidence",
+            "value": sum(
+                1 for item in result.trademark_materials if str(item.density_status) != "unknown"
+            ),
+        },
         {"key": "deterministic_observations", "value": len(result.observations)},
         {"key": "recognition_events", "value": len(result.recognition_log)},
         {
@@ -302,6 +543,11 @@ def _frames(result: ResearchResult) -> dict[str, pd.DataFrame]:
         "Variants": pd.DataFrame(_variant_rows(result)),
         "Layers": pd.DataFrame(_layer_rows(result)),
         "Assets": pd.DataFrame(_asset_rows(result)),
+        "Visual Evidence": pd.DataFrame(_visual_evidence_rows(result)),
+        "Visual Layers": pd.DataFrame(_visual_layer_rows(result)),
+        "Visual Search Queue": pd.DataFrame(_visual_search_rows(result)),
+        "Trademark Materials": pd.DataFrame(_trademark_material_rows(result)),
+        "Material Evidence": pd.DataFrame(_material_evidence_rows(result)),
         "Evidence Observations": pd.DataFrame(_observation_rows(result)),
         "Observed Claims": pd.DataFrame(claim_rows),
         "Configurations": pd.DataFrame(_configuration_rows(result)),

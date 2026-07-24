@@ -6,9 +6,11 @@ import json
 import re
 import time
 from dataclasses import dataclass
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
+
+from .network import RETRYABLE_TRANSPORT_ERRORS, http_error_detail
 
 
 class JinaError(RuntimeError):
@@ -58,12 +60,12 @@ class _JinaClient:
                         return json.loads(body)
                     return body
             except HTTPError as exc:
-                detail = exc.read().decode("utf-8", errors="replace")[:1_000]
+                detail = http_error_detail(exc, limit=1_000)
                 if (exc.code == 429 or 500 <= exc.code < 600) and attempt < self.max_retries:
                     time.sleep(min(2**attempt, 20.0))
                     continue
                 raise JinaError(f"Jina HTTP {exc.code}: {detail}") from exc
-            except (URLError, TimeoutError, json.JSONDecodeError) as exc:
+            except RETRYABLE_TRANSPORT_ERRORS + (json.JSONDecodeError,) as exc:
                 if attempt < self.max_retries:
                     time.sleep(min(2**attempt, 20.0))
                     continue
